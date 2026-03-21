@@ -1097,6 +1097,7 @@ async fn run_interactive_tui(
 fn into_app_server_tui_cli(cli: TuiCli) -> codex_tui_app_server::Cli {
     codex_tui_app_server::Cli {
         prompt: cli.prompt,
+        autonomous: cli.autonomous,
         images: cli.images,
         resume_picker: cli.resume_picker,
         resume_last: cli.resume_last,

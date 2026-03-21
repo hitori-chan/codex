@@ -20,6 +20,7 @@ struct TopCli {
 fn into_app_server_cli(cli: Cli) -> codex_tui_app_server::Cli {
     codex_tui_app_server::Cli {
         prompt: cli.prompt,
+        autonomous: cli.autonomous,
         images: cli.images,
         resume_picker: cli.resume_picker,
         resume_last: cli.resume_last,
