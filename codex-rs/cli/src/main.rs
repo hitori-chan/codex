@@ -613,6 +613,7 @@ async fn cli_main(arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
         }
         Some(Subcommand::Exec(mut exec_cli)) => {
             reject_remote_mode_for_subcommand(root_remote.as_deref(), "exec")?;
+            inherit_exec_flags(&interactive, &mut exec_cli);
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
                 root_config_overrides.clone(),
@@ -1097,6 +1098,7 @@ async fn run_interactive_tui(
 fn into_app_server_tui_cli(cli: TuiCli) -> codex_tui_app_server::Cli {
     codex_tui_app_server::Cli {
         prompt: cli.prompt,
+        autonomous: cli.autonomous,
         images: cli.images,
         resume_picker: cli.resume_picker,
         resume_last: cli.resume_last,
@@ -1262,6 +1264,12 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
         .extend(subcommand_cli.config_overrides.raw_overrides);
 }
 
+fn inherit_exec_flags(root_cli: &TuiCli, exec_cli: &mut ExecCli) {
+    if exec_cli.autonomous.is_none() {
+        exec_cli.autonomous = root_cli.autonomous.clone();
+    }
+}
+
 fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
     let name = "codex";
@@ -1375,6 +1383,58 @@ mod tests {
         );
         assert_eq!(args.session_id.as_deref(), Some("session-123"));
         assert_eq!(args.prompt.as_deref(), Some("re-review"));
+    }
+
+    #[test]
+    fn exec_inherits_root_autonomous_prompt() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "--autonomous",
+            "keep working",
+            "exec",
+            "hello",
+        ])
+        .expect("parse should succeed");
+
+        let MultitoolCli {
+            interactive,
+            subcommand,
+            ..
+        } = cli;
+        let Some(Subcommand::Exec(mut exec)) = subcommand else {
+            panic!("expected exec subcommand");
+        };
+        inherit_exec_flags(&interactive, &mut exec);
+
+        assert_eq!(exec.autonomous.as_deref(), Some("keep working"));
+        assert_eq!(exec.prompt.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn exec_subcommand_autonomous_prompt_takes_precedence() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "--autonomous",
+            "outer",
+            "exec",
+            "--autonomous",
+            "inner",
+            "hello",
+        ])
+        .expect("parse should succeed");
+
+        let MultitoolCli {
+            interactive,
+            subcommand,
+            ..
+        } = cli;
+        let Some(Subcommand::Exec(mut exec)) = subcommand else {
+            panic!("expected exec subcommand");
+        };
+        inherit_exec_flags(&interactive, &mut exec);
+
+        assert_eq!(interactive.autonomous.as_deref(), Some("outer"));
+        assert_eq!(exec.autonomous.as_deref(), Some("inner"));
     }
 
     fn app_server_from_args(args: &[&str]) -> AppServerCommand {

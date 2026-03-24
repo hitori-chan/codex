@@ -148,6 +148,10 @@ def f(lock):
         print("Lock acquired in child process")
 
 if __name__ == '__main__':
+    # Python 3.14 defaults to forkserver/spawn in more cases, which does not
+    # work reliably for inline `-c` snippets. Force `fork` so this test stays
+    # focused on semaphore support under the sandbox.
+    multiprocessing.set_start_method("fork")
     lock = Lock()
     p = Process(target=f, args=(lock,))
     p.start()

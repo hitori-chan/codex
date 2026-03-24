@@ -11,6 +11,10 @@ pub struct Cli {
     #[arg(value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
     pub prompt: Option<String>,
 
+    /// Start autonomous mode with a session-local prompt.
+    #[arg(long = "autonomous", value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
+    pub autonomous: Option<String>,
+
     /// Optional image(s) to attach to the initial prompt.
     #[arg(long = "image", short = 'i', value_name = "FILE", value_delimiter = ',', num_args = 1..)]
     pub images: Vec<PathBuf>,
@@ -112,4 +116,17 @@ pub struct Cli {
 
     #[clap(skip)]
     pub config_overrides: CliConfigOverrides,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn parses_autonomous_prompt_flag() {
+        let cli = Cli::parse_from(["codex", "--autonomous", "keep working"]);
+
+        assert_eq!(cli.autonomous.as_deref(), Some("keep working"));
+    }
 }
