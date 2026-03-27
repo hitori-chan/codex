@@ -1931,6 +1931,7 @@ async fn helpers_are_available_and_do_not_panic() {
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: tx,
         initial_user_message: None,
+        initial_autonomous_prompt: None,
         enhanced_keys_supported: false,
         has_chatgpt_account: false,
         model_catalog: test_model_catalog(&cfg),
@@ -2075,6 +2076,9 @@ async fn make_chatwidget_manual(
         retry_status_header: None,
         pending_status_indicator_restore: false,
         suppress_queue_autosend: false,
+        always_continue_enabled: false,
+        suppress_autonomous_on_turn_complete: false,
+        autonomous_prompt: None,
         thread_id: None,
         thread_name: None,
         forked_from: None,
@@ -6836,6 +6840,7 @@ async fn collaboration_modes_defaults_to_code_on_startup() {
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         initial_user_message: None,
+        initial_autonomous_prompt: None,
         enhanced_keys_supported: false,
         has_chatgpt_account: false,
         model_catalog: test_model_catalog(&cfg),
@@ -6881,6 +6886,7 @@ async fn experimental_mode_plan_is_ignored_on_startup() {
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: AppEventSender::new(unbounded_channel::<AppEvent>().0),
         initial_user_message: None,
+        initial_autonomous_prompt: None,
         enhanced_keys_supported: false,
         has_chatgpt_account: false,
         model_catalog: test_model_catalog(&cfg),
@@ -10035,6 +10041,140 @@ async fn fast_slash_command_updates_and_persists_local_service_tier() {
 }
 
 #[tokio::test]
+async fn always_continue_slash_command_toggles_during_task() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+    chat.refresh_status_surfaces();
+    chat.agent_turn_running = true;
+    chat.update_task_running_state();
+
+    chat.dispatch_command(SlashCommand::Autonomous);
+
+    assert!(chat.always_continue_enabled);
+    assert_eq!(status_line_text(&chat), Some("Autonomous on".to_string()));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Autonomous mode is on."),
+        "info message should confirm the toggle: {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_submits_continue_immediately() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Need anything else?".to_string()),
+        }),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "continue".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected auto-submitted continue turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_submits_custom_autonomous_prompt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+    chat.set_autonomous_prompt(Some("keep working".to_string()));
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Need anything else?".to_string()),
+        }),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "keep working".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected auto-submitted autonomous prompt, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_skips_autonomous_prompt_after_usage_limit_error() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+
+    chat.handle_codex_event(Event {
+        id: "turn-error".into(),
+        msg: EventMsg::Error(ErrorEvent {
+            message: "quota exceeded".to_string(),
+            codex_error_info: Some(CodexErrorInfo::UsageLimitExceeded),
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+        }),
+    });
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(chat.always_continue_enabled);
+}
+
+#[tokio::test]
+async fn autonomous_set_subcommand_updates_prompt_without_enabling_mode() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+    chat.agent_turn_running = true;
+    chat.update_task_running_state();
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Autonomous,
+        "set keep working".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(chat.autonomous_prompt.as_deref(), Some("keep working"));
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Autonomous prompt updated."),
+        "info message should confirm the prompt update: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Current session autonomous prompt: keep working."),
+        "info message should show the current autonomous prompt: {rendered:?}"
+    );
+}
+
+#[tokio::test]
 async fn user_turn_carries_service_tier_after_fast_toggle() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -12418,6 +12558,19 @@ async fn status_line_fast_mode_renders_on_and_off() {
 }
 
 #[tokio::test]
+async fn status_line_autonomous_mode_renders_on_and_off() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous off".to_string()));
+
+    chat.always_continue_enabled = true;
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous on".to_string()));
+}
+
+#[tokio::test]
 async fn status_line_fast_mode_footer_snapshot() {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -12435,6 +12588,25 @@ async fn status_line_fast_mode_footer_snapshot() {
         .draw(|f| chat.render(f.area(), f.buffer_mut()))
         .expect("draw fast-mode footer");
     assert_snapshot!("status_line_fast_mode_footer", terminal.backend());
+}
+
+#[tokio::test]
+async fn status_line_autonomous_mode_footer_snapshot() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(None).await;
+    chat.show_welcome_banner = false;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+    chat.refresh_status_line();
+
+    let width = 80;
+    let height = chat.desired_height(width);
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
+    terminal
+        .draw(|f| chat.render(f.area(), f.buffer_mut()))
+        .expect("draw autonomous-mode footer");
+    assert_snapshot!("status_line_autonomous_mode_footer", terminal.backend());
 }
 
 #[tokio::test]
