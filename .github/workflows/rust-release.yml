@@ -10,43 +10,62 @@ on:
   push:
     tags:
       - "rust-v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Version to release. Defaults to codex-rs/Cargo.toml version.
+        required: false
+        type: string
+      release_tag:
+        description: Tag to create/use. Defaults to rust-v<release_version>.
+        required: false
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  tag-check:
+  metadata:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@1.92
-      - name: Validate tag matches Cargo.toml version
+      - name: Resolve and validate release version
+        id: resolve
+        env:
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          RELEASE_VERSION_INPUT: ${{ inputs.release_version }}
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::Tag validation"
-
-          # 1. Must be a tag and match the regex
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
-            || { echo "❌  Not a tag push"; exit 1; }
-          [[ "${GITHUB_REF_NAME}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$ ]] \
-            || { echo "❌  Tag '${GITHUB_REF_NAME}' doesn't match expected format"; exit 1; }
-
-          # 2. Extract versions
-          tag_ver="${GITHUB_REF_NAME#rust-v}"
           cargo_ver="$(grep -m1 '^version' codex-rs/Cargo.toml \
                         | sed -E 's/version *= *"([^"]+)".*/\1/')"
 
-          # 3. Compare
-          [[ "${tag_ver}" == "${cargo_ver}" ]] \
-            || { echo "❌  Tag ${tag_ver} ≠ Cargo.toml ${cargo_ver}"; exit 1; }
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            [[ "${GITHUB_REF_TYPE}" == "tag" ]] \
+              || { echo "❌ Not a tag push"; exit 1; }
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#rust-v}"
+          else
+            version="${RELEASE_VERSION_INPUT:-$cargo_ver}"
+            tag="${RELEASE_TAG_INPUT:-rust-v${version}}"
+          fi
 
-          echo "✅  Tag and Cargo.toml agree (${tag_ver})"
-          echo "::endgroup::"
+          [[ "${tag}" =~ ^rust-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+            || { echo "❌ Tag '${tag}' doesn't match expected format"; exit 1; }
+          [[ "${tag#rust-v}" == "${version}" ]] \
+            || { echo "❌ Tag ${tag} does not encode version ${version}"; exit 1; }
+          [[ "${version}" == "${cargo_ver}" ]] \
+            || { echo "❌ Version ${version} ≠ Cargo.toml ${cargo_ver}"; exit 1; }
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: tag-check
+    needs: metadata
     name: Build - ${{ matrix.runner }} - ${{ matrix.target }}
     runs-on: ${{ matrix.runs_on || matrix.runner }}
     timeout-minutes: 60
@@ -59,24 +78,16 @@ jobs:
     env:
       # 2026-03-04: temporarily change releases to use thin LTO because
       # Ubuntu ARM is timing out at 60 minutes.
-      CARGO_PROFILE_RELEASE_LTO: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'thin' }}
+      CARGO_PROFILE_RELEASE_LTO: ${{ contains(needs.metadata.outputs.version, '-alpha') && 'thin' || 'thin' }}
 
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15-xlarge
-            target: aarch64-apple-darwin
-          - runner: macos-15-xlarge
-            target: x86_64-apple-darwin
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
 
     steps:
       - uses: actions/checkout@v6
@@ -91,21 +102,6 @@ jobs:
           echo "OS: $(uname -a)"
           echo "CPU model: ${cpu_model}"
           echo "Logical CPUs: $(nproc)"
-          echo "Total RAM: ${total_ram}"
-          echo "Disk usage:"
-          df -h .
-      - name: Print runner specs (macOS)
-        if: ${{ runner.os == 'macOS' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          total_ram="$(sysctl -n hw.memsize | awk '{printf "%.1f GiB\n", $1 / 1024 / 1024 / 1024}')"
-          echo "Runner: ${RUNNER_NAME:-unknown}"
-          echo "OS: $(sw_vers -productName) $(sw_vers -productVersion)"
-          echo "Hardware model: $(sysctl -n hw.model)"
-          echo "CPU architecture: $(uname -m)"
-          echo "Logical CPUs: $(sysctl -n hw.logicalcpu)"
-          echo "Physical CPUs: $(sysctl -n hw.physicalcpu)"
           echo "Total RAM: ${total_ram}"
           echo "Disk usage:"
           df -h .
@@ -232,7 +228,7 @@ jobs:
         shell: bash
         run: |
           echo "CARGO_PROFILE_RELEASE_LTO: ${CARGO_PROFILE_RELEASE_LTO}"
-          cargo build --target ${{ matrix.target }} --release --timings --bin codex --bin codex-responses-api-proxy
+          cargo build --target ${{ matrix.target }} --release --timings --bin codex
 
       - name: Upload Cargo timings
         uses: actions/upload-artifact@v7
@@ -248,78 +244,6 @@ jobs:
           target: ${{ matrix.target }}
           artifacts-dir: ${{ github.workspace }}/codex-rs/target/${{ matrix.target }}/release
 
-      - if: ${{ runner.os == 'macOS' }}
-        name: MacOS code signing (binaries)
-        uses: ./.github/actions/macos-code-sign
-        with:
-          target: ${{ matrix.target }}
-          sign-binaries: "true"
-          sign-dmg: "false"
-          apple-certificate: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          apple-notarization-key-p8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          apple-notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          apple-notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-
-      - if: ${{ runner.os == 'macOS' }}
-        name: Build macOS dmg
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          target="${{ matrix.target }}"
-          release_dir="target/${target}/release"
-          dmg_root="${RUNNER_TEMP}/codex-dmg-root"
-          volname="Codex (${target})"
-          dmg_path="${release_dir}/codex-${target}.dmg"
-
-          # The previous "MacOS code signing (binaries)" step signs + notarizes the
-          # built artifacts in `${release_dir}`. This step packages *those same*
-          # signed binaries into a dmg.
-          codex_binary_path="${release_dir}/codex"
-          proxy_binary_path="${release_dir}/codex-responses-api-proxy"
-
-          rm -rf "$dmg_root"
-          mkdir -p "$dmg_root"
-
-          if [[ ! -f "$codex_binary_path" ]]; then
-            echo "Binary $codex_binary_path not found"
-            exit 1
-          fi
-          if [[ ! -f "$proxy_binary_path" ]]; then
-            echo "Binary $proxy_binary_path not found"
-            exit 1
-          fi
-
-          ditto "$codex_binary_path" "${dmg_root}/codex"
-          ditto "$proxy_binary_path" "${dmg_root}/codex-responses-api-proxy"
-
-          rm -f "$dmg_path"
-          hdiutil create \
-            -volname "$volname" \
-            -srcfolder "$dmg_root" \
-            -format UDZO \
-            -ov \
-            "$dmg_path"
-
-          if [[ ! -f "$dmg_path" ]]; then
-            echo "dmg $dmg_path not found after build"
-            exit 1
-          fi
-
-      - if: ${{ runner.os == 'macOS' }}
-        name: MacOS code signing (dmg)
-        uses: ./.github/actions/macos-code-sign
-        with:
-          target: ${{ matrix.target }}
-          sign-binaries: "false"
-          sign-dmg: "true"
-          apple-certificate: ${{ secrets.APPLE_CERTIFICATE_P12 }}
-          apple-certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          apple-notarization-key-p8: ${{ secrets.APPLE_NOTARIZATION_KEY_P8 }}
-          apple-notarization-key-id: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
-          apple-notarization-issuer-id: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
-
       - name: Stage artifacts
         shell: bash
         run: |
@@ -327,15 +251,9 @@ jobs:
           mkdir -p "$dest"
 
           cp target/${{ matrix.target }}/release/codex "$dest/codex-${{ matrix.target }}"
-          cp target/${{ matrix.target }}/release/codex-responses-api-proxy "$dest/codex-responses-api-proxy-${{ matrix.target }}"
 
           if [[ "${{ matrix.target }}" == *linux* ]]; then
             cp target/${{ matrix.target }}/release/codex.sigstore "$dest/codex-${{ matrix.target }}.sigstore"
-            cp target/${{ matrix.target }}/release/codex-responses-api-proxy.sigstore "$dest/codex-responses-api-proxy-${{ matrix.target }}.sigstore"
-          fi
-
-          if [[ "${{ matrix.target }}" == *apple-darwin ]]; then
-            cp target/${{ matrix.target }}/release/codex-${{ matrix.target }}.dmg "$dest/codex-${{ matrix.target }}.dmg"
           fi
 
       - name: Compress artifacts
@@ -382,62 +300,33 @@ jobs:
           path: |
             codex-rs/dist/${{ matrix.target }}/*
 
-  build-windows:
-    needs: tag-check
-    uses: ./.github/workflows/rust-release-windows.yml
-    with:
-      release-lto: ${{ contains(github.ref_name, '-alpha') && 'thin' || 'fat' }}
-    secrets: inherit
-
-  argument-comment-lint-release-assets:
-    name: argument-comment-lint release assets
-    needs: tag-check
-    uses: ./.github/workflows/rust-release-argument-comment-lint.yml
-    with:
-      publish: true
-
-  zsh-release-assets:
-    name: zsh release assets
-    needs: tag-check
-    uses: ./.github/workflows/rust-release-zsh.yml
-
   release:
     needs:
+      - metadata
       - build
-      - build-windows
-      - argument-comment-lint-release-assets
-      - zsh-release-assets
     name: release
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
     outputs:
-      version: ${{ steps.release_name.outputs.name }}
-      tag: ${{ github.ref_name }}
-      should_publish_npm: ${{ steps.npm_publish_settings.outputs.should_publish }}
-      npm_tag: ${{ steps.npm_publish_settings.outputs.npm_tag }}
+      version: ${{ needs.metadata.outputs.version }}
+      tag: ${{ needs.metadata.outputs.tag }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Generate release notes from tag commit message
+      - name: Generate release notes from commit message
         id: release_notes
         shell: bash
         run: |
           set -euo pipefail
 
-          # On tag pushes, GITHUB_SHA may be a tag object for annotated tags;
-          # peel it to the underlying commit.
           commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
           notes_path="${RUNNER_TEMP}/release-notes.md"
 
-          # Use the commit message for the commit the tag points at (not the
-          # annotated tag message).
           git log -1 --format=%B "${commit}" > "${notes_path}"
-          # Ensure trailing newline so GitHub's markdown renderer doesn't
-          # occasionally run the last line into subsequent content.
           echo >> "${notes_path}"
 
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
@@ -451,6 +340,7 @@ jobs:
 
       - name: Delete entries from dist/ that should not go in the release
         run: |
+          rm -rf dist/shell-tool-mcp*
           rm -rf dist/windows-binaries*
           # cargo-timing.html appears under multiple target-specific directories.
           # If included in files: dist/**, release upload races on duplicate
@@ -464,58 +354,23 @@ jobs:
         run: |
           cp codex-rs/core/config.schema.json dist/config-schema.json
 
-      - name: Define release name
-        id: release_name
-        run: |
-          # Extract the version from the tag name, which is in the format
-          # "rust-v0.1.0".
-          version="${GITHUB_REF_NAME#rust-v}"
-          echo "name=${version}" >> $GITHUB_OUTPUT
-
-      - name: Determine npm publish settings
-        id: npm_publish_settings
+      - name: Create release tag for manual runs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
-          VERSION: ${{ steps.release_name.outputs.name }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
         run: |
           set -euo pipefail
-          version="${VERSION}"
-
-          if [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
-          elif [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-alpha\.[0-9]+$ ]]; then
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=alpha" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} already exists on origin."
+            exit 0
           fi
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          run_install: false
-
-      - name: Setup Node.js for npm packaging
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # stage_npm_packages.py requires DotSlash when staging releases.
-      - uses: facebook/install-dotslash@v2
-      - name: Stage npm packages
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ steps.release_name.outputs.name }}
-        run: |
-          ./scripts/stage_npm_packages.py \
-            --release-version "$RELEASE_VERSION" \
-            --package codex \
-            --package codex-responses-api-proxy \
-            --package codex-sdk
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${RELEASE_TAG}" -m "Release ${RELEASE_VERSION}" "${GITHUB_SHA}"
+          git push origin "refs/tags/${RELEASE_TAG}"
 
       - name: Stage installer scripts
         run: |
@@ -525,198 +380,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.release_name.outputs.name }}
-          tag_name: ${{ github.ref_name }}
+          name: ${{ needs.metadata.outputs.version }}
+          tag_name: ${{ needs.metadata.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           body_path: ${{ steps.release_notes.outputs.path }}
           files: dist/**
           # Mark as prerelease only when the version has a suffix after x.y.z
           # (e.g. -alpha, -beta). Otherwise publish a normal release.
-          prerelease: ${{ contains(steps.release_name.outputs.name, '-') }}
-
-      - uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-config.json
-
-      - uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-zsh-config.json
-
-      - uses: facebook/dotslash-publish-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          config: .github/dotslash-argument-comment-lint-config.json
-
-      - name: Trigger developers.openai.com deploy
-        # Only trigger the deploy if the release is not a pre-release.
-        # The deploy is used to update the developers.openai.com website with the new config schema json file.
-        if: ${{ !contains(steps.release_name.outputs.name, '-') }}
-        continue-on-error: true
-        env:
-          DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL: ${{ secrets.DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL }}
-        run: |
-          if ! curl -sS -f -o /dev/null -X POST "$DEV_WEBSITE_VERCEL_DEPLOY_HOOK_URL"; then
-            echo "::warning title=developers.openai.com deploy hook failed::Vercel deploy hook POST failed for ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-
-  # Publish to npm using OIDC authentication.
-  # July 31, 2025: https://github.blog/changelog/2025-07-31-npm-trusted-publishing-with-oidc-is-generally-available/
-  # npm docs: https://docs.npmjs.com/trusted-publishers
-  publish-npm:
-    # Publish to npm for stable releases and alpha pre-releases with numeric suffixes.
-    if: ${{ needs.release.outputs.should_publish_npm == 'true' }}
-    name: publish-npm
-    needs: release
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write # Required for OIDC
-      contents: read
-
-    steps:
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          registry-url: "https://registry.npmjs.org"
-          scope: "@openai"
-
-      # Trusted publishing requires npm CLI version 11.5.1 or later.
-      - name: Update npm
-        run: npm install -g npm@latest
-
-      - name: Download npm tarballs from release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ needs.release.outputs.tag }}
-          RELEASE_VERSION: ${{ needs.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          version="$RELEASE_VERSION"
-          tag="$RELEASE_TAG"
-          mkdir -p dist/npm
-          patterns=(
-            "codex-npm-${version}.tgz"
-            "codex-npm-linux-*-${version}.tgz"
-            "codex-npm-darwin-*-${version}.tgz"
-            "codex-npm-win32-*-${version}.tgz"
-            "codex-responses-api-proxy-npm-${version}.tgz"
-            "codex-sdk-npm-${version}.tgz"
-          )
-          for pattern in "${patterns[@]}"; do
-            gh release download "$tag" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --pattern "$pattern" \
-              --dir dist/npm
-          done
-
-      # No NODE_AUTH_TOKEN needed because we use OIDC.
-      - name: Publish to npm
-        env:
-          VERSION: ${{ needs.release.outputs.version }}
-          NPM_TAG: ${{ needs.release.outputs.npm_tag }}
-        run: |
-          set -euo pipefail
-          prefix=""
-          if [[ -n "${NPM_TAG}" ]]; then
-            prefix="${NPM_TAG}-"
-          fi
-
-          shopt -s nullglob
-          tarballs=(dist/npm/*-"${VERSION}".tgz)
-          if [[ ${#tarballs[@]} -eq 0 ]]; then
-            echo "No npm tarballs found in dist/npm for version ${VERSION}"
-            exit 1
-          fi
-
-          for tarball in "${tarballs[@]}"; do
-            filename="$(basename "${tarball}")"
-            tag=""
-
-            case "${filename}" in
-              codex-npm-linux-*-"${VERSION}".tgz|codex-npm-darwin-*-"${VERSION}".tgz|codex-npm-win32-*-"${VERSION}".tgz)
-                platform="${filename#codex-npm-}"
-                platform="${platform%-${VERSION}.tgz}"
-                tag="${prefix}${platform}"
-                ;;
-              codex-npm-"${VERSION}".tgz|codex-responses-api-proxy-npm-"${VERSION}".tgz|codex-sdk-npm-"${VERSION}".tgz)
-                tag="${NPM_TAG}"
-                ;;
-              *)
-                echo "Unexpected npm tarball: ${filename}"
-                exit 1
-                ;;
-            esac
-
-            publish_cmd=(npm publish "${GITHUB_WORKSPACE}/${tarball}")
-            if [[ -n "${tag}" ]]; then
-              publish_cmd+=(--tag "${tag}")
-            fi
-
-            echo "+ ${publish_cmd[*]}"
-            set +e
-            publish_output="$("${publish_cmd[@]}" 2>&1)"
-            publish_status=$?
-            set -e
-
-            echo "${publish_output}"
-            if [[ ${publish_status} -eq 0 ]]; then
-              continue
-            fi
-
-            if grep -qiE "previously published|cannot publish over|version already exists" <<< "${publish_output}"; then
-              echo "Skipping already-published package version for ${filename}"
-              continue
-            fi
-
-            exit "${publish_status}"
-          done
-
-  winget:
-    name: winget
-    needs: release
-    # Only publish stable/mainline releases to WinGet; pre-releases include a
-    # '-' in the semver string (e.g., 1.2.3-alpha.1).
-    if: ${{ !contains(needs.release.outputs.version, '-') }}
-    # This job only invokes a GitHub Action to open/update the winget-pkgs PR;
-    # it does not execute Windows-only tooling, so Linux is sufficient.
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - name: Publish to WinGet
-        uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5
-        with:
-          identifier: OpenAI.Codex
-          version: ${{ needs.release.outputs.version }}
-          release-tag: ${{ needs.release.outputs.tag }}
-          fork-user: openai-oss-forks
-          installers-regex: '^codex-(?:x86_64|aarch64)-pc-windows-msvc\.exe\.zip$'
-          token: ${{ secrets.WINGET_PUBLISH_PAT }}
-
-  update-branch:
-    name: Update latest-alpha-cli branch
-    permissions:
-      contents: write
-    needs: release
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Update latest-alpha-cli branch
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh api \
-            repos/${GITHUB_REPOSITORY}/git/refs/heads/latest-alpha-cli \
-            -X PATCH \
-            -f sha="${GITHUB_SHA}" \
-            -F force=true
+          prerelease: ${{ contains(needs.metadata.outputs.version, '-') }}

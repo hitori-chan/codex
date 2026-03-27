@@ -1002,6 +1002,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.shutdown_handle.shutdown();
                 drop(active);
             }
         }
@@ -1096,6 +1097,7 @@ impl CodexMessageProcessor {
                     {
                         let mut guard = self.active_login.lock().await;
                         if let Some(existing) = guard.take() {
+                            existing.shutdown_handle.shutdown();
                             drop(existing);
                         }
                         *guard = Some(ActiveLogin {
@@ -1201,6 +1203,7 @@ impl CodexMessageProcessor {
         let mut guard = self.active_login.lock().await;
         if guard.as_ref().map(|l| l.login_id) == Some(login_id) {
             if let Some(active) = guard.take() {
+                active.shutdown_handle.shutdown();
                 drop(active);
             }
             Ok(())
@@ -1260,6 +1263,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.shutdown_handle.shutdown();
                 drop(active);
             }
         }
@@ -1330,6 +1334,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.shutdown_handle.shutdown();
                 drop(active);
             }
         }

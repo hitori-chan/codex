@@ -18,6 +18,7 @@ use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::CodexErrorInfo as AppServerCodexErrorInfo;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
@@ -109,6 +110,7 @@ use codex_core::default_client::set_default_client_residency_requirement;
 use codex_core::default_client::set_default_originator;
 
 const DEFAULT_ANALYTICS_ENABLED: bool = true;
+const DEFAULT_AUTONOMOUS_PROMPT: &str = "continue";
 
 enum InitialOperation {
     UserTurn {
@@ -137,6 +139,7 @@ impl RequestIdSequencer {
 }
 
 struct ExecRunArgs {
+    autonomous: Option<String>,
     in_process_start_args: InProcessClientStartArgs,
     command: Option<ExecCommand>,
     config: Config,
@@ -153,6 +156,15 @@ struct ExecRunArgs {
     stderr_with_ansi: bool,
 }
 
+#[derive(Clone)]
+struct ExecTurnStartDefaults {
+    thread_id: String,
+    cwd: PathBuf,
+    approval_policy: AskForApproval,
+    sandbox_policy: codex_protocol::protocol::SandboxPolicy,
+    effort: Option<codex_protocol::openai_models::ReasoningEffort>,
+}
+
 fn exec_root_span() -> tracing::Span {
     info_span!(
         "codex.exec",
@@ -162,6 +174,60 @@ fn exec_root_span() -> tracing::Span {
     )
 }
 
+fn sanitize_autonomous_prompt(prompt: Option<String>) -> Option<String> {
+    prompt.and_then(|prompt| {
+        let trimmed = prompt.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn should_suppress_autonomous_for_server_error(info: Option<&AppServerCodexErrorInfo>) -> bool {
+    matches!(
+        info,
+        Some(
+            AppServerCodexErrorInfo::UsageLimitExceeded | AppServerCodexErrorInfo::ServerOverloaded
+        ) | Some(AppServerCodexErrorInfo::ResponseTooManyFailedAttempts {
+            http_status_code: Some(429),
+        })
+    )
+}
+
+async fn start_user_turn_request(
+    client: &InProcessAppServerClient,
+    request_ids: &mut RequestIdSequencer,
+    defaults: &ExecTurnStartDefaults,
+    items: Vec<UserInput>,
+    output_schema: Option<Value>,
+) -> Result<TurnStartResponse, String> {
+    send_request_with_response(
+        client,
+        ClientRequest::TurnStart {
+            request_id: request_ids.next(),
+            params: TurnStartParams {
+                thread_id: defaults.thread_id.clone(),
+                input: items.into_iter().map(Into::into).collect(),
+                cwd: Some(defaults.cwd.clone()),
+                approval_policy: Some(defaults.approval_policy.into()),
+                approvals_reviewer: None,
+                sandbox_policy: Some(defaults.sandbox_policy.clone().into()),
+                model: None,
+                service_tier: None,
+                effort: defaults.effort,
+                summary: None,
+                personality: None,
+                output_schema,
+                collaboration_mode: None,
+            },
+        },
+        "turn/start",
+    )
+    .await
+}
+
 pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result<()> {
     if let Err(err) = set_default_originator("codex_exec".to_string()) {
         tracing::warn!(?err, "Failed to set codex exec originator override {err:?}");
@@ -169,6 +235,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
     let Cli {
         command,
+        autonomous,
         images,
         model: model_cli_arg,
         oss,
@@ -435,6 +502,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
     };
     run_exec_session(ExecRunArgs {
+        autonomous,
         in_process_start_args,
         command,
         config,
@@ -456,6 +524,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
 
 async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     let ExecRunArgs {
+        autonomous,
         in_process_start_args,
         command,
         config,
@@ -471,6 +540,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         skip_git_repo_check,
         stderr_with_ansi,
     } = args;
+    let autonomous = sanitize_autonomous_prompt(autonomous);
 
     let mut event_processor: Box<dyn EventProcessor> = match json_mode {
         true => Box::new(EventProcessorWithJsonOutput::new(last_message_file.clone())),
@@ -635,6 +705,22 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             )
         }
     };
+    let autonomous_prompt = if matches!(&initial_operation, InitialOperation::UserTurn { .. }) {
+        autonomous
+    } else {
+        None
+    };
+    let follow_up_output_schema = match &initial_operation {
+        InitialOperation::UserTurn { output_schema, .. } => output_schema.clone(),
+        InitialOperation::Review { .. } => None,
+    };
+    let primary_turn_defaults = ExecTurnStartDefaults {
+        thread_id: primary_thread_id_for_span.clone(),
+        cwd: default_cwd.clone(),
+        approval_policy: default_approval_policy,
+        sandbox_policy: default_sandbox_policy.clone(),
+        effort: default_effort,
+    };
 
     // Print the effective configuration and initial request so users can see what Codex
     // is using.
@@ -653,32 +739,17 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
         }
     });
 
-    let task_id = match initial_operation {
+    let mut task_id = match initial_operation {
         InitialOperation::UserTurn {
             items,
             output_schema,
         } => {
-            let response: TurnStartResponse = send_request_with_response(
+            let response: TurnStartResponse = start_user_turn_request(
                 &client,
-                ClientRequest::TurnStart {
-                    request_id: request_ids.next(),
-                    params: TurnStartParams {
-                        thread_id: primary_thread_id_for_span.clone(),
-                        input: items.into_iter().map(Into::into).collect(),
-                        cwd: Some(default_cwd),
-                        approval_policy: Some(default_approval_policy.into()),
-                        approvals_reviewer: None,
-                        sandbox_policy: Some(default_sandbox_policy.clone().into()),
-                        model: None,
-                        service_tier: None,
-                        effort: default_effort,
-                        summary: None,
-                        personality: None,
-                        output_schema,
-                        collaboration_mode: None,
-                    },
-                },
-                "turn/start",
+                &mut request_ids,
+                &primary_turn_defaults,
+                items,
+                output_schema,
             )
             .await
             .map_err(anyhow::Error::msg)?;
@@ -718,6 +789,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
     // Track whether a fatal error was reported by the server so we can
     // exit with a non-zero status for automation-friendly signaling.
     let mut error_seen = false;
+    let mut suppress_autonomous_for_current_turn = false;
     let mut interrupt_channel_open = true;
     let primary_thread_id_for_requests = primary_thread_id.to_string();
     loop {
@@ -762,6 +834,10 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                         && !payload.will_retry
                     {
                         error_seen = true;
+                        suppress_autonomous_for_current_turn |=
+                            should_suppress_autonomous_for_server_error(
+                                payload.error.codex_error_info.as_ref(),
+                            );
                     }
                 } else if let ServerNotification::TurnCompleted(payload) = &notification
                     && payload.thread_id == primary_thread_id_for_requests
@@ -773,10 +849,31 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     )
                 {
                     error_seen = true;
+                    suppress_autonomous_for_current_turn =
+                        should_suppress_autonomous_for_server_error(
+                            payload
+                                .turn
+                                .error
+                                .as_ref()
+                                .and_then(|error| error.codex_error_info.as_ref()),
+                        );
                 }
 
                 maybe_backfill_turn_completed_items(&client, &mut request_ids, &mut notification)
                     .await;
+
+                let should_auto_continue = autonomous_prompt.is_some()
+                    && !suppress_autonomous_for_current_turn
+                    && matches!(
+                        &notification,
+                        ServerNotification::TurnCompleted(payload)
+                            if payload.thread_id == primary_thread_id_for_requests
+                                && payload.turn.id == task_id
+                                && matches!(
+                                    payload.turn.status,
+                                    codex_app_server_protocol::TurnStatus::Completed
+                                )
+                    );
 
                 if should_process_notification(
                     &notification,
@@ -786,6 +883,29 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     match event_processor.process_server_notification(notification) {
                         CodexStatus::Running => {}
                         CodexStatus::InitiateShutdown => {
+                            if should_auto_continue {
+                                let prompt_text = autonomous_prompt
+                                    .as_deref()
+                                    .unwrap_or(DEFAULT_AUTONOMOUS_PROMPT)
+                                    .to_string();
+                                let response: TurnStartResponse = start_user_turn_request(
+                                    &client,
+                                    &mut request_ids,
+                                    &primary_turn_defaults,
+                                    vec![UserInput::Text {
+                                        text: prompt_text,
+                                        text_elements: Vec::new(),
+                                    }],
+                                    follow_up_output_schema.clone(),
+                                )
+                                .await
+                                .map_err(anyhow::Error::msg)?;
+                                task_id = response.turn.id;
+                                suppress_autonomous_for_current_turn = false;
+                                exec_span.record("turn.id", task_id.as_str());
+                                info!("Sent autonomous prompt with event ID: {task_id}");
+                                continue;
+                            }
                             if let Err(err) = request_shutdown(
                                 &client,
                                 &mut request_ids,
@@ -1977,6 +2097,16 @@ mod tests {
         assert_eq!(
             event.approvals_reviewer,
             ApprovalsReviewer::GuardianSubagent
+        );
+    }
+
+    #[test]
+    fn sanitize_autonomous_prompt_trims_and_drops_empty_values() {
+        assert_eq!(sanitize_autonomous_prompt(None), None);
+        assert_eq!(sanitize_autonomous_prompt(Some("   ".to_string())), None);
+        assert_eq!(
+            sanitize_autonomous_prompt(Some("  keep working  ".to_string())),
+            Some("keep working".to_string())
         );
     }
 }

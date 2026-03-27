@@ -518,6 +518,11 @@ impl ChatWidget {
                     "Fast off".to_string()
                 },
             ),
+            StatusLineItem::AutonomousMode => Some(if self.always_continue_enabled {
+                "Autonomous on".to_string()
+            } else {
+                "Autonomous off".to_string()
+            }),
         }
     }
 
