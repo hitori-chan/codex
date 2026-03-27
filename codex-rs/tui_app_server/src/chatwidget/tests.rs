@@ -10175,6 +10175,26 @@ async fn autonomous_set_subcommand_updates_prompt_without_enabling_mode() {
 }
 
 #[tokio::test]
+async fn autonomous_set_continue_from_chatbox_clears_composer() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(None).await;
+
+    chat.bottom_pane.set_composer_text(
+        "/autonomous set continue".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(chat.autonomous_prompt.as_deref(), Some("continue"));
+    assert_eq!(chat.bottom_pane.composer_text(), String::new());
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+}
+
+#[tokio::test]
 async fn user_turn_carries_service_tier_after_fast_toggle() {
     let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());

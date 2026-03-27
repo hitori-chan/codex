@@ -5284,6 +5284,8 @@ impl ChatWidget {
                     ),
                     "set" if !remainder.is_empty() => {
                         self.set_autonomous_prompt(Some(remainder.to_string()));
+                        self.bottom_pane
+                            .set_composer_text(String::new(), Vec::new(), Vec::new());
                         self.add_info_message(
                             "Autonomous prompt updated.".to_string(),
                             Some(self.autonomous_prompt_status_hint()),
@@ -5291,6 +5293,8 @@ impl ChatWidget {
                     }
                     "default" if remainder.is_empty() => {
                         self.set_autonomous_prompt(/*prompt*/ None);
+                        self.bottom_pane
+                            .set_composer_text(String::new(), Vec::new(), Vec::new());
                         self.add_info_message(
                             "Autonomous prompt set to default.".to_string(),
                             Some(self.autonomous_prompt_status_hint()),
