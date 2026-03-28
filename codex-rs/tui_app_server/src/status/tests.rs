@@ -150,12 +150,12 @@ async fn status_snapshot_includes_reasoning_details() {
         primary: Some(RateLimitWindow {
             used_percent: 72.5,
             window_minutes: Some(300),
-            resets_at: Some(reset_at_from(&captured_at, 600)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 600)),
         }),
         secondary: Some(RateLimitWindow {
             used_percent: 45.0,
             window_minutes: Some(10080),
-            resets_at: Some(reset_at_from(&captured_at, 1_200)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 1_200)),
         }),
         credits: None,
         plan_type: None,
@@ -172,16 +172,16 @@ async fn status_snapshot_includes_reasoning_details() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
+        /*collaboration_mode*/ None,
         reasoning_effort_override,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -226,19 +226,19 @@ async fn status_permissions_non_default_workspace_write_is_custom() {
     let composite = new_status_output(
         &config,
         account_display.as_ref(),
-        None,
+        /*token_info*/ None,
         &usage,
         &None,
-        None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered_lines = render_lines(&composite.display_lines(80));
+    let rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     let permissions_line = rendered_lines
         .iter()
         .find(|line| line.contains("Permissions:"))
@@ -291,16 +291,16 @@ async fn status_snapshot_includes_forked_from() {
         Some(&token_info),
         &usage,
         &Some(session_id),
-        None,
+        /*thread_name*/ None,
         Some(forked_from),
-        None,
+        /*rate_limits*/ None,
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -337,7 +337,7 @@ async fn status_snapshot_includes_monthly_limit() {
         primary: Some(RateLimitWindow {
             used_percent: 12.0,
             window_minutes: Some(43_200),
-            resets_at: Some(reset_at_from(&captured_at, 86_400)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 86_400)),
         }),
         secondary: None,
         credits: None,
@@ -353,16 +353,16 @@ async fn status_snapshot_includes_monthly_limit() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -403,16 +403,16 @@ async fn status_snapshot_shows_unlimited_credits() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered = render_lines(&composite.display_lines(120));
+    let rendered = render_lines(&composite.display_lines(/*width*/ 120));
     assert!(
         rendered
             .iter()
@@ -452,16 +452,16 @@ async fn status_snapshot_shows_positive_credits() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered = render_lines(&composite.display_lines(120));
+    let rendered = render_lines(&composite.display_lines(/*width*/ 120));
     assert!(
         rendered
             .iter()
@@ -501,16 +501,16 @@ async fn status_snapshot_hides_zero_credits() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered = render_lines(&composite.display_lines(120));
+    let rendered = render_lines(&composite.display_lines(/*width*/ 120));
     assert!(
         rendered.iter().all(|line| !line.contains("Credits:")),
         "expected no Credits line, got {rendered:?}"
@@ -548,16 +548,16 @@ async fn status_snapshot_hides_when_has_no_credits_flag() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered = render_lines(&composite.display_lines(120));
+    let rendered = render_lines(&composite.display_lines(/*width*/ 120));
     assert!(
         rendered.iter().all(|line| !line.contains("Credits:")),
         "expected no Credits line when has_credits is false, got {rendered:?}"
@@ -593,16 +593,16 @@ async fn status_card_token_usage_excludes_cached_tokens() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
         None,
         now,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered = render_lines(&composite.display_lines(120));
+    let rendered = render_lines(&composite.display_lines(/*width*/ 120));
 
     assert!(
         rendered.iter().all(|line| !line.contains("cached")),
@@ -638,7 +638,7 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
         primary: Some(RateLimitWindow {
             used_percent: 72.5,
             window_minutes: Some(300),
-            resets_at: Some(reset_at_from(&captured_at, 600)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 600)),
         }),
         secondary: None,
         credits: None,
@@ -655,16 +655,16 @@ async fn status_snapshot_truncates_in_narrow_terminal() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
+        /*collaboration_mode*/ None,
         reasoning_effort_override,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(70));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 70));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -704,16 +704,16 @@ async fn status_snapshot_shows_missing_limits_message() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
         None,
         now,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -749,12 +749,12 @@ async fn status_snapshot_includes_credits_and_limits() {
         primary: Some(RateLimitWindow {
             used_percent: 45.0,
             window_minutes: Some(300),
-            resets_at: Some(reset_at_from(&captured_at, 900)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 900)),
         }),
         secondary: Some(RateLimitWindow {
             used_percent: 30.0,
             window_minutes: Some(10_080),
-            resets_at: Some(reset_at_from(&captured_at, 2_700)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 2_700)),
         }),
         credits: Some(CreditsSnapshot {
             has_credits: true,
@@ -773,16 +773,16 @@ async fn status_snapshot_includes_credits_and_limits() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -830,16 +830,16 @@ async fn status_snapshot_shows_empty_limits_message() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         captured_at,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -875,12 +875,12 @@ async fn status_snapshot_shows_stale_limits_message() {
         primary: Some(RateLimitWindow {
             used_percent: 72.5,
             window_minutes: Some(300),
-            resets_at: Some(reset_at_from(&captured_at, 600)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 600)),
         }),
         secondary: Some(RateLimitWindow {
             used_percent: 40.0,
             window_minutes: Some(10_080),
-            resets_at: Some(reset_at_from(&captured_at, 1_800)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 1_800)),
         }),
         credits: None,
         plan_type: None,
@@ -896,16 +896,16 @@ async fn status_snapshot_shows_stale_limits_message() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         now,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -941,12 +941,12 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
         primary: Some(RateLimitWindow {
             used_percent: 60.0,
             window_minutes: Some(300),
-            resets_at: Some(reset_at_from(&captured_at, 1_200)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 1_200)),
         }),
         secondary: Some(RateLimitWindow {
             used_percent: 35.0,
             window_minutes: Some(10_080),
-            resets_at: Some(reset_at_from(&captured_at, 2_400)),
+            resets_at: Some(reset_at_from(&captured_at, /*seconds*/ 2_400)),
         }),
         credits: Some(CreditsSnapshot {
             has_credits: false,
@@ -966,16 +966,16 @@ async fn status_snapshot_cached_limits_hide_credits_without_flag() {
         Some(&token_info),
         &usage,
         &None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
         Some(&rate_display),
         None,
         now,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let mut rendered_lines = render_lines(&composite.display_lines(80));
+    let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
@@ -1024,16 +1024,16 @@ async fn status_context_window_uses_last_usage() {
         Some(&token_info),
         &total_usage,
         &None,
-        None,
-        None,
-        None,
+        /*thread_name*/ None,
+        /*forked_from*/ None,
+        /*rate_limits*/ None,
         None,
         now,
         &model_slug,
-        None,
-        None,
+        /*collaboration_mode*/ None,
+        /*reasoning_effort_override*/ None,
     );
-    let rendered_lines = render_lines(&composite.display_lines(80));
+    let rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     let context_line = rendered_lines
         .into_iter()
         .find(|line| line.contains("Context window"))

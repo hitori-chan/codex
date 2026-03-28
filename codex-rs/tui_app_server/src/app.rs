@@ -518,7 +518,12 @@ struct ThreadEventStore {
 
 impl ThreadEventStore {
     fn event_survives_session_refresh(event: &ThreadBufferedEvent) -> bool {
-        matches!(event, ThreadBufferedEvent::Request(_))
+        matches!(
+            event,
+            ThreadBufferedEvent::Request(_)
+                | ThreadBufferedEvent::Notification(ServerNotification::HookStarted(_))
+                | ThreadBufferedEvent::Notification(ServerNotification::HookCompleted(_))
+        )
     }
 
     fn new(capacity: usize) -> Self {
@@ -1835,9 +1840,8 @@ impl App {
             return Ok(());
         }
 
-        self.chat_widget.add_error_message(format!(
-            "Not available in app-server TUI yet for thread {thread_id}."
-        ));
+        self.chat_widget
+            .add_error_message(format!("Not available in TUI yet for thread {thread_id}."));
         Ok(())
     }
 
@@ -2623,18 +2627,52 @@ impl App {
     /// refreshes from the backend. Refresh failures are treated as "thread is only inspectable by
     /// historical id now" and converted into closed picker entries instead of deleting them, so
     /// the stable traversal order remains intact for review and keyboard navigation.
-    async fn open_agent_picker(&mut self) {
+    async fn open_agent_picker(&mut self, app_server: &mut AppServerSession) {
         let thread_ids: Vec<ThreadId> = self.thread_event_channels.keys().cloned().collect();
         for thread_id in thread_ids {
-            if self.thread_event_listener_tasks.contains_key(&thread_id) {
-                if self.agent_navigation.get(&thread_id).is_none() {
+            let existing_entry = self.agent_navigation.get(&thread_id).cloned();
+            match app_server
+                .thread_read(thread_id, /*include_turns*/ false)
+                .await
+            {
+                Ok(thread) => {
                     self.upsert_agent_picker_thread(
-                        thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
-                        /*is_closed*/ false,
+                        thread_id,
+                        thread.agent_nickname.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_nickname.clone())
+                        }),
+                        thread.agent_role.or_else(|| {
+                            existing_entry
+                                .as_ref()
+                                .and_then(|entry| entry.agent_role.clone())
+                        }),
+                        matches!(
+                            thread.status,
+                            codex_app_server_protocol::ThreadStatus::NotLoaded
+                        ),
                     );
                 }
-            } else {
-                self.mark_agent_picker_thread_closed(thread_id);
+                Err(err) => {
+                    let is_closed = Self::closed_state_for_thread_read_error(
+                        &err,
+                        existing_entry.as_ref().map(|entry| entry.is_closed),
+                    );
+                    if let Some(entry) = existing_entry {
+                        self.upsert_agent_picker_thread(
+                            thread_id,
+                            entry.agent_nickname,
+                            entry.agent_role,
+                            is_closed,
+                        );
+                    } else {
+                        self.upsert_agent_picker_thread(
+                            thread_id, /*agent_nickname*/ None, /*agent_role*/ None,
+                            is_closed,
+                        );
+                    }
+                }
             }
         }
 
@@ -2693,6 +2731,18 @@ impl App {
             initial_selected_idx,
             ..Default::default()
         });
+    }
+
+    fn is_terminal_thread_read_error(err: &color_eyre::Report) -> bool {
+        err.chain()
+            .any(|cause| cause.to_string().contains("thread not loaded:"))
+    }
+
+    fn closed_state_for_thread_read_error(
+        err: &color_eyre::Report,
+        existing_is_closed: Option<bool>,
+    ) -> bool {
+        Self::is_terminal_thread_read_error(err) || existing_is_closed.unwrap_or(false)
     }
 
     /// Updates cached picker metadata and then mirrors any visible-label change into the footer.
@@ -3622,7 +3672,7 @@ impl App {
                     Ok(app_server) => app_server,
                     Err(err) => {
                         self.chat_widget.add_error_message(format!(
-                            "Failed to start app-server-backed session picker: {err}"
+                            "Failed to start TUI session picker: {err}"
                         ));
                         return Ok(AppRunControl::Continue);
                     }
@@ -3631,6 +3681,7 @@ impl App {
                     tui,
                     &self.config,
                     /*show_all*/ false,
+                    /*include_non_interactive*/ false,
                     picker_app_server,
                 )
                 .await?
@@ -4816,7 +4867,7 @@ impl App {
                 self.chat_widget.open_approvals_popup();
             }
             AppEvent::OpenAgentPicker => {
-                self.open_agent_picker().await;
+                self.open_agent_picker(app_server).await;
             }
             AppEvent::SelectAgentThread(thread_id) => {
                 self.select_agent_thread(tui, app_server, thread_id).await?;
@@ -5583,7 +5634,7 @@ async fn fetch_all_mcp_server_statuses(
                 },
             })
             .await
-            .wrap_err("mcpServerStatus/list failed in app-server TUI")?;
+            .wrap_err("mcpServerStatus/list failed in TUI")?;
         statuses.extend(response.data);
         if let Some(next_cursor) = response.next_cursor {
             cursor = Some(next_cursor);
@@ -5610,7 +5661,7 @@ async fn fetch_plugins_list(
             },
         })
         .await
-        .wrap_err("plugin/list failed in app-server TUI")
+        .wrap_err("plugin/list failed in TUI")
 }
 
 async fn fetch_plugin_detail(
@@ -5621,7 +5672,7 @@ async fn fetch_plugin_detail(
     request_handle
         .request_typed(ClientRequest::PluginRead { request_id, params })
         .await
-        .wrap_err("plugin/read failed in app-server TUI")
+        .wrap_err("plugin/read failed in TUI")
 }
 
 async fn fetch_plugin_install(
@@ -5640,7 +5691,7 @@ async fn fetch_plugin_install(
             },
         })
         .await
-        .wrap_err("plugin/install failed in app-server TUI")
+        .wrap_err("plugin/install failed in TUI")
 }
 
 async fn fetch_plugin_uninstall(
@@ -5657,12 +5708,12 @@ async fn fetch_plugin_uninstall(
             },
         })
         .await
-        .wrap_err("plugin/uninstall failed in app-server TUI")
+        .wrap_err("plugin/uninstall failed in TUI")
 }
 
 /// Convert flat `McpServerStatus` responses into the per-server maps used by the
 /// in-process MCP subsystem (tools keyed as `mcp__{server}__{tool}`, plus
-/// per-server resource/template/auth maps). Test-only because the app-server TUI
+/// per-server resource/template/auth maps). Test-only because the TUI
 /// renders directly from `McpServerStatus` rather than these maps.
 #[cfg(test)]
 type McpInventoryMaps = (
@@ -5732,6 +5783,16 @@ mod tests {
     use codex_app_server_protocol::AgentMessageDeltaNotification;
     use codex_app_server_protocol::CommandExecutionRequestApprovalParams;
     use codex_app_server_protocol::ConfigWarningNotification;
+    use codex_app_server_protocol::HookCompletedNotification;
+    use codex_app_server_protocol::HookEventName as AppServerHookEventName;
+    use codex_app_server_protocol::HookExecutionMode as AppServerHookExecutionMode;
+    use codex_app_server_protocol::HookHandlerType as AppServerHookHandlerType;
+    use codex_app_server_protocol::HookOutputEntry as AppServerHookOutputEntry;
+    use codex_app_server_protocol::HookOutputEntryKind as AppServerHookOutputEntryKind;
+    use codex_app_server_protocol::HookRunStatus as AppServerHookRunStatus;
+    use codex_app_server_protocol::HookRunSummary as AppServerHookRunSummary;
+    use codex_app_server_protocol::HookScope as AppServerHookScope;
+    use codex_app_server_protocol::HookStartedNotification;
     use codex_app_server_protocol::JSONRPCErrorError;
     use codex_app_server_protocol::NetworkApprovalContext as AppServerNetworkApprovalContext;
     use codex_app_server_protocol::NetworkApprovalProtocol as AppServerNetworkApprovalProtocol;
@@ -5915,12 +5976,18 @@ mod tests {
             App::should_wait_for_initial_session(&SessionSelection::StartFresh);
         assert_eq!(wait_for_initial_session, true);
         assert_eq!(
-            App::should_handle_active_thread_events(wait_for_initial_session, true),
+            App::should_handle_active_thread_events(
+                wait_for_initial_session,
+                /*has_active_thread_receiver*/ true
+            ),
             false
         );
 
         assert_eq!(
-            App::should_stop_waiting_for_initial_session(wait_for_initial_session, None),
+            App::should_stop_waiting_for_initial_session(
+                wait_for_initial_session,
+                /*primary_thread_id*/ None
+            ),
             false
         );
         if App::should_stop_waiting_for_initial_session(
@@ -5932,7 +5999,10 @@ mod tests {
         assert_eq!(wait_for_initial_session, false);
 
         assert_eq!(
-            App::should_handle_active_thread_events(wait_for_initial_session, true),
+            App::should_handle_active_thread_events(
+                wait_for_initial_session,
+                /*has_active_thread_receiver*/ true
+            ),
             true
         );
     }
@@ -5946,7 +6016,10 @@ mod tests {
             },
         ));
         assert_eq!(
-            App::should_handle_active_thread_events(wait_for_resume, true),
+            App::should_handle_active_thread_events(
+                wait_for_resume,
+                /*has_active_thread_receiver*/ true
+            ),
             true
         );
         let wait_for_fork = App::should_wait_for_initial_session(&SessionSelection::Fork(
@@ -5956,7 +6029,10 @@ mod tests {
             },
         ));
         assert_eq!(
-            App::should_handle_active_thread_events(wait_for_fork, true),
+            App::should_handle_active_thread_events(
+                wait_for_fork,
+                /*has_active_thread_receiver*/ true
+            ),
             true
         );
     }
@@ -5965,7 +6041,8 @@ mod tests {
     async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach() -> Result<()> {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
         let thread_id = ThreadId::new();
-        let approval_request = exec_approval_request(thread_id, "turn-1", "call-1", None);
+        let approval_request =
+            exec_approval_request(thread_id, "turn-1", "call-1", /*approval_id*/ None);
 
         app.enqueue_primary_thread_request(approval_request).await?;
         app.enqueue_primary_thread_session(
@@ -6063,7 +6140,7 @@ mod tests {
         while let Ok(event) = app_event_rx.try_recv() {
             match event {
                 AppEvent::InsertHistoryCell(cell) => {
-                    let transcript = lines_to_single_string(&cell.transcript_lines(80));
+                    let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
                     saw_replayed_answer |= transcript.contains("earlier prompt");
                 }
                 AppEvent::SubmitThreadOp {
@@ -6172,8 +6249,8 @@ mod tests {
         let mut app = make_test_app().await;
         let thread_id = ThreadId::new();
         app.thread_event_channels
-            .insert(thread_id, ThreadEventChannel::new(1));
-        app.set_thread_active(thread_id, true).await;
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        app.set_thread_active(thread_id, /*active*/ true).await;
 
         let event = thread_closed_notification(thread_id);
 
@@ -6255,7 +6332,7 @@ mod tests {
             make_chatwidget_manual_with_sender().await;
         app.chat_widget = chat_widget;
 
-        app.replay_thread_snapshot(snapshot, true);
+        app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ true);
 
         assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
         assert!(app.chat_widget.queued_user_message_texts().is_empty());
@@ -6293,11 +6370,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6322,7 +6401,7 @@ mod tests {
                 )],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         match next_user_turn_op(&mut new_op_rx) {
@@ -6343,11 +6422,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6373,7 +6454,7 @@ mod tests {
                 )],
                 input_state: Some(input_state),
             },
-            false,
+            /*resume_restored_queue*/ false,
         );
 
         assert_eq!(
@@ -6392,11 +6473,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6420,7 +6503,7 @@ mod tests {
                 events: vec![],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         assert_eq!(
@@ -6439,11 +6522,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6467,7 +6552,7 @@ mod tests {
                 events: Vec::new(),
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         assert_eq!(
@@ -6497,7 +6582,7 @@ mod tests {
                 events: Vec::new(),
                 input_state: None,
             },
-            false,
+            /*resume_restored_queue*/ false,
         );
 
         assert!(app.chat_widget.is_task_running_for_test());
@@ -6509,11 +6594,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6546,7 +6633,7 @@ mod tests {
                 ],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         assert!(
@@ -6560,7 +6647,7 @@ mod tests {
 
         app.chat_widget.handle_server_notification(
             turn_completed_notification(thread_id, "turn-1", TurnStatus::Completed),
-            None,
+            /*replay_kind*/ None,
         );
 
         match next_user_turn_op(&mut new_op_rx) {
@@ -6613,7 +6700,7 @@ mod tests {
         let (chat_widget, _app_event_tx, _rx, mut new_op_rx) =
             make_chatwidget_manual_with_sender().await;
         app.chat_widget = chat_widget;
-        app.replay_thread_snapshot(snapshot, true);
+        app.replay_thread_snapshot(snapshot, /*resume_restored_queue*/ true);
 
         assert_eq!(app.chat_widget.composer_text_with_pending(), large);
 
@@ -6678,7 +6765,7 @@ mod tests {
                 events: vec![],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -6759,7 +6846,7 @@ mod tests {
                 events: vec![],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         assert_eq!(
@@ -6779,11 +6866,13 @@ mod tests {
         let thread_id = ThreadId::new();
         let session = test_thread_session(thread_id, PathBuf::from("/tmp/project"));
         app.chat_widget.handle_thread_session(session.clone());
-        app.chat_widget
-            .handle_server_notification(turn_started_notification(thread_id, "turn-1"), None);
+        app.chat_widget.handle_server_notification(
+            turn_started_notification(thread_id, "turn-1"),
+            /*replay_kind*/ None,
+        );
         app.chat_widget.handle_server_notification(
             agent_message_delta_notification(thread_id, "turn-1", "agent-1", "streaming"),
-            None,
+            /*replay_kind*/ None,
         );
         app.chat_widget
             .apply_external_edit("queued follow-up".to_string());
@@ -6809,7 +6898,7 @@ mod tests {
                 )],
                 input_state: Some(input_state),
             },
-            true,
+            /*resume_restored_queue*/ true,
         );
 
         assert_eq!(
@@ -6846,11 +6935,15 @@ mod tests {
     #[tokio::test]
     async fn open_agent_picker_keeps_missing_threads_for_replay() -> Result<()> {
         let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
-            .insert(thread_id, ThreadEventChannel::new(1));
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
 
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
         assert_eq!(
@@ -6866,19 +6959,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_agent_picker_keeps_cached_closed_threads() -> Result<()> {
+    async fn open_agent_picker_preserves_cached_metadata_for_replay_threads() -> Result<()> {
         let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
-            .insert(thread_id, ThreadEventChannel::new(1));
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
         app.agent_navigation.upsert(
             thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            /*is_closed*/ true,
         );
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
 
         assert_eq!(app.thread_event_channels.contains_key(&thread_id), true);
         assert_eq!(
@@ -6893,11 +6990,112 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_agent_picker_marks_terminal_read_errors_closed() -> Result<()> {
+        let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let thread_id = ThreadId::new();
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+        app.agent_navigation.upsert(
+            thread_id,
+            Some("Robie".to_string()),
+            Some("explorer".to_string()),
+            /*is_closed*/ false,
+        );
+
+        app.open_agent_picker(&mut app_server).await;
+
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: Some("Robie".to_string()),
+                agent_role: Some("explorer".to_string()),
+                is_closed: true,
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_thread_read_error_detection_matches_not_loaded_errors() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: thr_123"
+        );
+
+        assert!(App::is_terminal_thread_read_error(&err));
+    }
+
+    #[test]
+    fn terminal_thread_read_error_detection_ignores_transient_failures() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+        );
+
+        assert!(!App::is_terminal_thread_read_error(&err));
+    }
+
+    #[test]
+    fn closed_state_for_thread_read_error_preserves_live_state_without_cache_on_transient_error() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read transport error: broken pipe"
+        );
+
+        assert!(!App::closed_state_for_thread_read_error(
+            &err, /*existing_is_closed*/ None
+        ));
+    }
+
+    #[test]
+    fn closed_state_for_thread_read_error_marks_terminal_uncached_threads_closed() {
+        let err = color_eyre::eyre::eyre!(
+            "thread/read failed during TUI session lookup: thread/read failed: thread not loaded: thr_123"
+        );
+
+        assert!(App::closed_state_for_thread_read_error(
+            &err, /*existing_is_closed*/ None
+        ));
+    }
+
+    #[tokio::test]
+    async fn open_agent_picker_marks_loaded_threads_open() -> Result<()> {
+        let mut app = make_test_app().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
+        let started = app_server
+            .start_thread(app.chat_widget.config_ref())
+            .await?;
+        let thread_id = started.session.thread_id;
+        app.thread_event_channels
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
+
+        app.open_agent_picker(&mut app_server).await;
+
+        assert_eq!(
+            app.agent_navigation.get(&thread_id),
+            Some(&AgentPickerThreadEntry {
+                agent_nickname: None,
+                agent_role: None,
+                is_closed: false,
+            })
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn open_agent_picker_prompts_to_enable_multi_agent_when_disabled() -> Result<()> {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let _ = app.config.features.disable(Feature::Collab);
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -6910,7 +7108,7 @@ mod tests {
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
         let rendered = cell
-            .display_lines(120)
+            .display_lines(/*width*/ 120)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -6987,7 +7185,7 @@ mod tests {
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
         let rendered = cell
-            .display_lines(120)
+            .display_lines(/*width*/ 120)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -7018,9 +7216,9 @@ mod tests {
             .with_user_config(&config_toml_path, user_config);
         app.config
             .features
-            .set_enabled(Feature::GuardianApproval, true)?;
+            .set_enabled(Feature::GuardianApproval, /*enabled*/ true)?;
         app.chat_widget
-            .set_feature_enabled(Feature::GuardianApproval, true);
+            .set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
         app.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
         app.chat_widget
             .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
@@ -7078,7 +7276,7 @@ mod tests {
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
         let rendered = cell
-            .display_lines(120)
+            .display_lines(/*width*/ 120)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -7177,9 +7375,9 @@ mod tests {
             .with_user_config(&config_toml_path, user_config);
         app.config
             .features
-            .set_enabled(Feature::GuardianApproval, true)?;
+            .set_enabled(Feature::GuardianApproval, /*enabled*/ true)?;
         app.chat_widget
-            .set_feature_enabled(Feature::GuardianApproval, true);
+            .set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
         app.config.approvals_reviewer = ApprovalsReviewer::User;
         app.chat_widget
             .set_approvals_reviewer(ApprovalsReviewer::User);
@@ -7317,9 +7515,9 @@ guardian_approval = true
             .with_user_config(&config_toml_path, user_config);
         app.config
             .features
-            .set_enabled(Feature::GuardianApproval, true)?;
+            .set_enabled(Feature::GuardianApproval, /*enabled*/ true)?;
         app.chat_widget
-            .set_feature_enabled(Feature::GuardianApproval, true);
+            .set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
         app.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
         app.chat_widget
             .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
@@ -7360,7 +7558,7 @@ guardian_approval = true
             other => panic!("expected InsertHistoryCell event, got {other:?}"),
         };
         let rendered = cell
-            .display_lines(120)
+            .display_lines(/*width*/ 120)
             .into_iter()
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
@@ -7396,9 +7594,9 @@ guardian_approval = true
             .with_user_config(&config_toml_path, user_config);
         app.config
             .features
-            .set_enabled(Feature::GuardianApproval, true)?;
+            .set_enabled(Feature::GuardianApproval, /*enabled*/ true)?;
         app.chat_widget
-            .set_feature_enabled(Feature::GuardianApproval, true);
+            .set_feature_enabled(Feature::GuardianApproval, /*enabled*/ true);
         app.config.approvals_reviewer = ApprovalsReviewer::GuardianSubagent;
         app.chat_widget
             .set_approvals_reviewer(ApprovalsReviewer::GuardianSubagent);
@@ -7429,7 +7627,7 @@ guardian_approval = true
         assert!(
             !app_events.iter().any(|event| match event {
                 AppEvent::InsertHistoryCell(cell) => cell
-                    .display_lines(120)
+                    .display_lines(/*width*/ 120)
                     .iter()
                     .any(|line| line.to_string().contains("Permissions updated to")),
                 _ => false,
@@ -7452,11 +7650,15 @@ guardian_approval = true
     async fn open_agent_picker_allows_existing_agent_threads_when_feature_is_disabled() -> Result<()>
     {
         let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+        let mut app_server =
+            crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref())
+                .await
+                .expect("embedded app server");
         let thread_id = ThreadId::new();
         app.thread_event_channels
-            .insert(thread_id, ThreadEventChannel::new(1));
+            .insert(thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
-        app.open_agent_picker().await;
+        app.open_agent_picker(&mut app_server).await;
         app.chat_widget
             .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
 
@@ -7478,16 +7680,16 @@ guardian_approval = true
         app.primary_thread_id = Some(main_thread_id);
         app.active_thread_id = Some(main_thread_id);
         app.thread_event_channels
-            .insert(main_thread_id, ThreadEventChannel::new(1));
+            .insert(main_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
 
-        let agent_channel = ThreadEventChannel::new(1);
+        let agent_channel = ThreadEventChannel::new(/*capacity*/ 1);
         {
             let mut store = agent_channel.store.lock().await;
             store.push_request(exec_approval_request(
                 agent_thread_id,
                 "turn-1",
                 "call-1",
-                None,
+                /*approval_id*/ None,
             ));
         }
         app.thread_event_channels
@@ -7496,7 +7698,7 @@ guardian_approval = true
             agent_thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            /*is_closed*/ false,
         );
 
         app.refresh_pending_thread_approvals().await;
@@ -7521,11 +7723,11 @@ guardian_approval = true
         app.primary_thread_id = Some(main_thread_id);
         app.active_thread_id = Some(main_thread_id);
         app.thread_event_channels
-            .insert(main_thread_id, ThreadEventChannel::new(1));
+            .insert(main_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
         app.thread_event_channels.insert(
             agent_thread_id,
             ThreadEventChannel::new_with_session(
-                1,
+                /*capacity*/ 1,
                 ThreadSessionState {
                     approval_policy: AskForApproval::OnRequest,
                     sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
@@ -7539,12 +7741,17 @@ guardian_approval = true
             agent_thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            /*is_closed*/ false,
         );
 
         app.enqueue_thread_request(
             agent_thread_id,
-            exec_approval_request(agent_thread_id, "turn-approval", "call-approval", None),
+            exec_approval_request(
+                agent_thread_id,
+                "turn-approval",
+                "call-approval",
+                /*approval_id*/ None,
+            ),
         )
         .await?;
 
@@ -7561,7 +7768,12 @@ guardian_approval = true
     async fn inactive_thread_exec_approval_preserves_context() {
         let app = make_test_app().await;
         let thread_id = ThreadId::new();
-        let mut request = exec_approval_request(thread_id, "turn-approval", "call-approval", None);
+        let mut request = exec_approval_request(
+            thread_id,
+            "turn-approval",
+            "call-approval",
+            /*approval_id*/ None,
+        );
         let ServerRequest::CommandExecutionRequestApproval { params, .. } = &mut request else {
             panic!("expected exec approval request");
         };
@@ -7629,7 +7841,12 @@ guardian_approval = true
         let app = make_test_app().await;
         let thread_id = ThreadId::new();
         let script = r#"python3 -c 'print("Hello, world!")'"#;
-        let mut request = exec_approval_request(thread_id, "turn-approval", "call-approval", None);
+        let mut request = exec_approval_request(
+            thread_id,
+            "turn-approval",
+            "call-approval",
+            /*approval_id*/ None,
+        );
         let ServerRequest::CommandExecutionRequestApproval { params, .. } = &mut request else {
             panic!("expected exec approval request");
         };
@@ -7666,11 +7883,11 @@ guardian_approval = true
         app.primary_thread_id = Some(main_thread_id);
         app.active_thread_id = Some(main_thread_id);
         app.thread_event_channels
-            .insert(main_thread_id, ThreadEventChannel::new(1));
+            .insert(main_thread_id, ThreadEventChannel::new(/*capacity*/ 1));
         app.thread_event_channels.insert(
             agent_thread_id,
             ThreadEventChannel::new_with_session(
-                4,
+                /*capacity*/ 4,
                 ThreadSessionState {
                     approval_policy: AskForApproval::OnRequest,
                     sandbox_policy: SandboxPolicy::new_workspace_write_policy(),
@@ -7684,12 +7901,17 @@ guardian_approval = true
             agent_thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            /*is_closed*/ false,
         );
 
         app.enqueue_thread_request(
             agent_thread_id,
-            exec_approval_request(agent_thread_id, "turn-approval", "call-approval", None),
+            exec_approval_request(
+                agent_thread_id,
+                "turn-approval",
+                "call-approval",
+                /*approval_id*/ None,
+            ),
         )
         .await?;
         assert_eq!(
@@ -7730,7 +7952,11 @@ guardian_approval = true
         app.primary_session_configured = Some(primary_session.clone());
         app.thread_event_channels.insert(
             main_thread_id,
-            ThreadEventChannel::new_with_session(4, primary_session.clone(), Vec::new()),
+            ThreadEventChannel::new_with_session(
+                /*capacity*/ 4,
+                primary_session.clone(),
+                Vec::new(),
+            ),
         );
 
         let rollout_path = temp_dir.path().join("agent-rollout.jsonl");
@@ -7835,7 +8061,11 @@ guardian_approval = true
         app.primary_session_configured = Some(primary_session.clone());
         app.thread_event_channels.insert(
             main_thread_id,
-            ThreadEventChannel::new_with_session(4, primary_session.clone(), Vec::new()),
+            ThreadEventChannel::new_with_session(
+                /*capacity*/ 4,
+                primary_session.clone(),
+                Vec::new(),
+            ),
         );
 
         app.enqueue_thread_notification(
@@ -7884,27 +8114,46 @@ guardian_approval = true
         let snapshot = [
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), Some("explorer"), true),
+                format_agent_picker_item_name(
+                    Some("Robie"),
+                    Some("explorer"),
+                    /*is_primary*/ true
+                ),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), Some("explorer"), false),
+                format_agent_picker_item_name(
+                    Some("Robie"),
+                    Some("explorer"),
+                    /*is_primary*/ false
+                ),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(Some("Robie"), None, false),
+                format_agent_picker_item_name(
+                    Some("Robie"),
+                    /*agent_role*/ None,
+                    /*is_primary*/ false
+                ),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(None, Some("explorer"), false),
+                format_agent_picker_item_name(
+                    /*agent_nickname*/ None,
+                    Some("explorer"),
+                    /*is_primary*/ false
+                ),
                 thread_id
             ),
             format!(
                 "{} | {}",
-                format_agent_picker_item_name(None, None, false),
+                format_agent_picker_item_name(
+                    /*agent_nickname*/ None, /*agent_role*/ None,
+                    /*is_primary*/ false
+                ),
                 thread_id
             ),
         ]
@@ -8034,7 +8283,7 @@ guardian_approval = true
         let agent_cell = |text: &str| -> Arc<dyn HistoryCell> {
             Arc::new(AgentMessageCell::new(
                 vec![Line::from(text.to_string())],
-                true,
+                /*is_first_line*/ true,
             )) as Arc<dyn HistoryCell>
         };
         let make_header = |is_first| -> Arc<dyn HistoryCell> {
@@ -8061,9 +8310,9 @@ guardian_approval = true
                 app.chat_widget.current_model(),
                 event,
                 is_first,
-                None,
-                None,
-                false,
+                /*tooltip_override*/ None,
+                /*auth_plan*/ None,
+                /*show_fast_status*/ false,
             )) as Arc<dyn HistoryCell>
         };
 
@@ -8071,7 +8320,7 @@ guardian_approval = true
             make_header(true),
             Arc::new(crate::history_cell::new_info_event(
                 "startup tip that used to replay".to_string(),
-                None,
+                /*hint*/ None,
             )) as Arc<dyn HistoryCell>,
             user_cell("Tell me a long story about a town with a dark lighthouse."),
             agent_cell(story_part_one),
@@ -8083,7 +8332,7 @@ guardian_approval = true
         app.has_emitted_history_lines = true;
 
         let rendered = app
-            .clear_ui_header_lines_with_version(80, "<VERSION>")
+            .clear_ui_header_lines_with_version(/*width*/ 80, "<VERSION>")
             .iter()
             .map(|line| {
                 line.spans
@@ -8141,7 +8390,7 @@ guardian_approval = true
         set_chatgpt_auth(&mut app.chat_widget);
 
         let rendered = app
-            .clear_ui_header_lines_with_version(80, "<VERSION>")
+            .clear_ui_header_lines_with_version(/*width*/ 80, "<VERSION>")
             .iter()
             .map(|line| {
                 line.spans
@@ -8342,6 +8591,59 @@ guardian_approval = true
         })
     }
 
+    fn hook_started_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
+        ServerNotification::HookStarted(HookStartedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some(turn_id.to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Running,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: None,
+                duration_ms: None,
+                entries: Vec::new(),
+            },
+        })
+    }
+
+    fn hook_completed_notification(thread_id: ThreadId, turn_id: &str) -> ServerNotification {
+        ServerNotification::HookCompleted(HookCompletedNotification {
+            thread_id: thread_id.to_string(),
+            turn_id: Some(turn_id.to_string()),
+            run: AppServerHookRunSummary {
+                id: "user-prompt-submit:0:/tmp/hooks.json".to_string(),
+                event_name: AppServerHookEventName::UserPromptSubmit,
+                handler_type: AppServerHookHandlerType::Command,
+                execution_mode: AppServerHookExecutionMode::Sync,
+                scope: AppServerHookScope::Turn,
+                source_path: PathBuf::from("/tmp/hooks.json"),
+                display_order: 0,
+                status: AppServerHookRunStatus::Stopped,
+                status_message: Some("checking go-workflow input policy".to_string()),
+                started_at: 1,
+                completed_at: Some(11),
+                duration_ms: Some(10),
+                entries: vec![
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Warning,
+                        text: "go-workflow must start from PlanMode".to_string(),
+                    },
+                    AppServerHookOutputEntry {
+                        kind: AppServerHookOutputEntryKind::Stop,
+                        text: "prompt blocked".to_string(),
+                    },
+                ],
+            },
+        })
+    }
+
     fn agent_message_delta_notification(
         thread_id: ThreadId,
         turn_id: &str,
@@ -8384,7 +8686,7 @@ guardian_approval = true
 
     #[test]
     fn thread_event_store_tracks_active_turn_lifecycle() {
-        let mut store = ThreadEventStore::new(8);
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
         assert_eq!(store.active_turn_id(), None);
 
         let thread_id = ThreadId::new();
@@ -8415,17 +8717,18 @@ guardian_approval = true
             test_turn("turn-2", TurnStatus::InProgress, Vec::new()),
         ];
 
-        let store = ThreadEventStore::new_with_session(8, session.clone(), turns.clone());
+        let store =
+            ThreadEventStore::new_with_session(/*capacity*/ 8, session.clone(), turns.clone());
         assert_eq!(store.active_turn_id(), Some("turn-2"));
 
-        let mut refreshed_store = ThreadEventStore::new(8);
+        let mut refreshed_store = ThreadEventStore::new(/*capacity*/ 8);
         refreshed_store.set_session(session, turns);
         assert_eq!(refreshed_store.active_turn_id(), Some("turn-2"));
     }
 
     #[test]
     fn thread_event_store_clear_active_turn_id_resets_cached_turn() {
-        let mut store = ThreadEventStore::new(8);
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
         let thread_id = ThreadId::new();
         store.push_notification(turn_started_notification(thread_id, "turn-1"));
 
@@ -8437,12 +8740,12 @@ guardian_approval = true
     #[test]
     fn thread_event_store_rebase_preserves_resolved_request_state() {
         let thread_id = ThreadId::new();
-        let mut store = ThreadEventStore::new(8);
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
         store.push_request(exec_approval_request(
             thread_id,
             "turn-approval",
             "call-approval",
-            None,
+            /*approval_id*/ None,
         ));
         store.push_notification(ServerNotification::ServerRequestResolved(
             codex_app_server_protocol::ServerRequestResolvedNotification {
@@ -8456,6 +8759,37 @@ guardian_approval = true
         let snapshot = store.snapshot();
         assert!(snapshot.events.is_empty());
         assert_eq!(store.has_pending_thread_approvals(), false);
+    }
+
+    #[test]
+    fn thread_event_store_rebase_preserves_hook_notifications() {
+        let thread_id = ThreadId::new();
+        let mut store = ThreadEventStore::new(/*capacity*/ 8);
+        store.push_notification(hook_started_notification(thread_id, "turn-hook"));
+        store.push_notification(hook_completed_notification(thread_id, "turn-hook"));
+
+        store.rebase_buffer_after_session_refresh();
+
+        let snapshot = store.snapshot();
+        let hook_notifications = snapshot
+            .events
+            .into_iter()
+            .map(|event| match event {
+                ThreadBufferedEvent::Notification(notification) => {
+                    serde_json::to_value(notification).expect("hook notification should serialize")
+                }
+                other => panic!("expected buffered hook notification, saw: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            hook_notifications,
+            vec![
+                serde_json::to_value(hook_started_notification(thread_id, "turn-hook"))
+                    .expect("hook notification should serialize"),
+                serde_json::to_value(hook_completed_notification(thread_id, "turn-hook"))
+                    .expect("hook notification should serialize"),
+            ]
+        );
     }
 
     fn next_user_turn_op(op_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Op>) -> Op {
@@ -8488,11 +8822,11 @@ guardian_approval = true
             ThreadId::new(),
             model,
             model_info.slug.as_str(),
-            None,
-            None,
-            None,
+            /*account_id*/ None,
+            /*account_email*/ None,
+            /*auth_mode*/ None,
             "test_originator".to_string(),
-            false,
+            /*log_user_prompts*/ false,
             "test".to_string(),
             SessionSource::Cli,
         )
@@ -9049,7 +9383,7 @@ guardian_approval = true
         let agent_cell = |text: &str| -> Arc<dyn HistoryCell> {
             Arc::new(AgentMessageCell::new(
                 vec![Line::from(text.to_string())],
-                true,
+                /*is_first_line*/ true,
             )) as Arc<dyn HistoryCell>
         };
 
@@ -9077,16 +9411,19 @@ guardian_approval = true
                 app.chat_widget.current_model(),
                 event,
                 is_first,
-                None,
-                None,
-                false,
+                /*tooltip_override*/ None,
+                /*auth_plan*/ None,
+                /*show_fast_status*/ false,
             )) as Arc<dyn HistoryCell>
         };
 
         let placeholder = "[Image #1]";
         let edited_text = format!("follow-up (edited) {placeholder}");
         let edited_range = edited_text.len().saturating_sub(placeholder.len())..edited_text.len();
-        let edited_text_elements = vec![TextElement::new(edited_range.into(), None)];
+        let edited_text_elements = vec![TextElement::new(
+            edited_range.into(),
+            /*placeholder*/ None,
+        )];
         let edited_local_image_paths = vec![PathBuf::from("/tmp/fake-image.png")];
 
         // Simulate a transcript with duplicated history (e.g., from prior backtracks)
@@ -9313,7 +9650,7 @@ guardian_approval = true
                 events: Vec::new(),
                 input_state: None,
             },
-            false,
+            /*resume_restored_queue*/ false,
         );
 
         while let Ok(event) = app_event_rx.try_recv() {
@@ -9347,7 +9684,7 @@ guardian_approval = true
             receiver_thread_id,
             Some("Robie".to_string()),
             Some("explorer".to_string()),
-            false,
+            /*is_closed*/ false,
         );
 
         let replacement = ChatWidget::new_with_app_event(ChatWidgetInit {
@@ -9395,13 +9732,13 @@ guardian_approval = true
                 )],
                 input_state: None,
             },
-            false,
+            /*resume_restored_queue*/ false,
         );
 
         let mut saw_named_wait = false;
         while let Ok(event) = app_event_rx.try_recv() {
             if let AppEvent::InsertHistoryCell(cell) = event {
-                let transcript = lines_to_single_string(&cell.transcript_lines(80));
+                let transcript = lines_to_single_string(&cell.transcript_lines(/*width*/ 80));
                 saw_named_wait |= transcript.contains("Robie [explorer]");
             }
         }
@@ -9419,7 +9756,11 @@ guardian_approval = true
         let initial_session = test_thread_session(thread_id, PathBuf::from("/tmp/original"));
         app.thread_event_channels.insert(
             thread_id,
-            ThreadEventChannel::new_with_session(4, initial_session.clone(), Vec::new()),
+            ThreadEventChannel::new_with_session(
+                /*capacity*/ 4,
+                initial_session.clone(),
+                Vec::new(),
+            ),
         );
 
         let resumed_turns = vec![test_turn(
@@ -9481,7 +9822,7 @@ guardian_approval = true
             }) as Arc<dyn HistoryCell>,
             Arc::new(AgentMessageCell::new(
                 vec![Line::from("after first")],
-                false,
+                /*is_first_line*/ false,
             )) as Arc<dyn HistoryCell>,
             Arc::new(UserHistoryCell {
                 message: "second".to_string(),
@@ -9491,7 +9832,7 @@ guardian_approval = true
             }) as Arc<dyn HistoryCell>,
             Arc::new(AgentMessageCell::new(
                 vec![Line::from("after second")],
-                false,
+                /*is_first_line*/ false,
             )) as Arc<dyn HistoryCell>,
         ];
         app.overlay = Some(Overlay::new_transcript(app.transcript_cells.clone()));
@@ -9499,7 +9840,7 @@ guardian_approval = true
         app.backtrack.overlay_preview_active = true;
         app.backtrack.nth_user_message = 1;
 
-        let changed = app.apply_non_pending_thread_rollback(1);
+        let changed = app.apply_non_pending_thread_rollback(/*num_turns*/ 1);
 
         assert!(changed);
         assert!(app.backtrack_render_pending);
@@ -9542,7 +9883,7 @@ guardian_approval = true
 
         app.handle_thread_rollback_response(
             thread_id,
-            1,
+            /*num_turns*/ 1,
             &ThreadRollbackResponse {
                 thread: Thread {
                     id: thread_id.to_string(),
@@ -9720,7 +10061,14 @@ guardian_approval = true
 
     #[tokio::test]
     async fn session_summary_skip_zero_usage() {
-        assert!(session_summary(TokenUsage::default(), None, None).is_none());
+        assert!(
+            session_summary(
+                TokenUsage::default(),
+                /*thread_id*/ None,
+                /*thread_name*/ None
+            )
+            .is_none()
+        );
     }
 
     #[tokio::test]
@@ -9733,7 +10081,8 @@ guardian_approval = true
         };
         let conversation = ThreadId::from_string("123e4567-e89b-12d3-a456-426614174000").unwrap();
 
-        let summary = session_summary(usage, Some(conversation), None).expect("summary");
+        let summary =
+            session_summary(usage, Some(conversation), /*thread_name*/ None).expect("summary");
         assert_eq!(
             summary.usage_line,
             "Token usage: total=12 input=10 output=2"
