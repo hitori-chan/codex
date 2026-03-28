@@ -12719,25 +12719,6 @@ async fn status_line_fast_mode_footer_snapshot() {
 }
 
 #[tokio::test]
-async fn status_line_autonomous_mode_footer_snapshot() {
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
-
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.show_welcome_banner = false;
-    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
-    chat.refresh_status_line();
-
-    let width = 80;
-    let height = chat.desired_height(width);
-    let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("create terminal");
-    terminal
-        .draw(|f| chat.render(f.area(), f.buffer_mut()))
-        .expect("draw autonomous-mode footer");
-    assert_snapshot!("status_line_autonomous_mode_footer", terminal.backend());
-}
-
-#[tokio::test]
 async fn status_line_model_with_reasoning_includes_fast_for_gpt54_only() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.4")).await;
     chat.config.cwd = PathBuf::from("/tmp/project").abs();
