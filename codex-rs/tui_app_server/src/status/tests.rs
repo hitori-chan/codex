@@ -58,10 +58,33 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
         .collect()
 }
 
+fn sanitize_codex_version(line: String) -> String {
+    let Some(version_start) = line.find("(v") else {
+        return line;
+    };
+    let Some(version_end_rel) = line[version_start + 2..].find(')') else {
+        return line;
+    };
+    let version_end = version_start + 2 + version_end_rel;
+    let old_version = &line[version_start + 2..version_end];
+    let replacement = "0.0.0";
+
+    let mut rebuilt = String::with_capacity(line.len());
+    rebuilt.push_str(&line[..version_start + 2]);
+    rebuilt.push_str(replacement);
+    rebuilt.push(')');
+    if old_version.len() > replacement.len() {
+        rebuilt.push_str(&" ".repeat(old_version.len() - replacement.len()));
+    }
+    rebuilt.push_str(&line[version_end + 1..]);
+    rebuilt
+}
+
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
     lines
         .into_iter()
         .map(|line| {
+            let line = sanitize_codex_version(line);
             if let (Some(dir_pos), Some(pipe_idx)) = (line.find("Directory: "), line.rfind('│')) {
                 let prefix = &line[..dir_pos + "Directory: ".len()];
                 let suffix = &line[pipe_idx..];
