@@ -319,9 +319,9 @@ mod tests {
 
     #[test]
     fn parses_autonomous_prompt_flag() {
-        let cli = Cli::parse_from(["codex-exec", "--autonomous", "keep working", "hello"]);
+        let cli = Cli::parse_from(["codex-exec", "--autonomous", "continue", "hello"]);
 
-        assert_eq!(cli.autonomous.as_deref(), Some("keep working"));
+        assert_eq!(cli.autonomous.as_deref(), Some("continue"));
         assert_eq!(cli.prompt.as_deref(), Some("hello"));
     }
 }
