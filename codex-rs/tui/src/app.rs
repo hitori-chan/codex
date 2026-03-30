@@ -1049,6 +1049,7 @@ impl App {
             app_event_tx: self.app_event_tx.clone(),
             // Fork/resume bootstraps here don't carry any prefilled message content.
             initial_user_message: None,
+            initial_autonomous_prompt: None,
             enhanced_keys_supported: self.enhanced_keys_supported,
             has_chatgpt_account: self.chat_widget.has_chatgpt_account(),
             model_catalog: self.model_catalog.clone(),
@@ -3355,6 +3356,7 @@ impl App {
         harness_overrides: ConfigOverrides,
         active_profile: Option<String>,
         initial_prompt: Option<String>,
+        initial_autonomous_prompt: Option<String>,
         initial_images: Vec<PathBuf>,
         session_selection: SessionSelection,
         feedback: codex_feedback::CodexFeedback,
@@ -3452,6 +3454,7 @@ impl App {
                         // CLI prompt args are plain strings, so they don't provide element ranges.
                         Vec::new(),
                     ),
+                    initial_autonomous_prompt: initial_autonomous_prompt.clone(),
                     enhanced_keys_supported,
                     has_chatgpt_account,
                     model_catalog: model_catalog.clone(),
@@ -3487,6 +3490,7 @@ impl App {
                         // CLI prompt args are plain strings, so they don't provide element ranges.
                         Vec::new(),
                     ),
+                    initial_autonomous_prompt: initial_autonomous_prompt.clone(),
                     enhanced_keys_supported,
                     has_chatgpt_account,
                     model_catalog: model_catalog.clone(),
@@ -3527,6 +3531,7 @@ impl App {
                         // CLI prompt args are plain strings, so they don't provide element ranges.
                         Vec::new(),
                     ),
+                    initial_autonomous_prompt,
                     enhanced_keys_supported,
                     has_chatgpt_account,
                     model_catalog: model_catalog.clone(),
@@ -6261,6 +6266,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
             ),
+            initial_autonomous_prompt: None,
             enhanced_keys_supported: false,
             has_chatgpt_account: false,
             model_catalog: app.model_catalog.clone(),
@@ -10000,6 +10006,7 @@ guardian_approval = true
             frame_requester: crate::tui::FrameRequester::test_dummy(),
             app_event_tx: app.app_event_tx.clone(),
             initial_user_message: None,
+            initial_autonomous_prompt: None,
             enhanced_keys_supported: app.enhanced_keys_supported,
             has_chatgpt_account: app.chat_widget.has_chatgpt_account(),
             model_catalog: app.model_catalog.clone(),
