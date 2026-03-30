@@ -2910,6 +2910,70 @@ mod tests {
         render_lines(&cell.transcript_lines(u16::MAX))
     }
 
+    fn sanitize_codex_version(line: String) -> String {
+        let Some(version_start) = line.find("(v") else {
+            return line;
+        };
+        let Some(version_end_rel) = line[version_start + 2..].find(')') else {
+            return line;
+        };
+        let version_end = version_start + 2 + version_end_rel;
+        let old_version = &line[version_start + 2..version_end];
+        let replacement = "0.0.0";
+
+        let mut rebuilt = String::with_capacity(line.len());
+        rebuilt.push_str(&line[..version_start + 2]);
+        rebuilt.push_str(replacement);
+        rebuilt.push(')');
+        if old_version.len() > replacement.len() {
+            rebuilt.push_str(&" ".repeat(old_version.len() - replacement.len()));
+        }
+        rebuilt.push_str(&line[version_end + 1..]);
+        rebuilt
+    }
+
+    fn normalize_bordered_box_width(lines: Vec<String>) -> Vec<String> {
+        let Some(bottom_idx) = lines.iter().position(|line| line.starts_with('╰')) else {
+            return lines;
+        };
+        if bottom_idx == 0 || !lines[0].starts_with('╭') {
+            return lines;
+        }
+
+        let Some(inner_width) = lines[1..bottom_idx]
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix('│')
+                    .and_then(|line| line.strip_suffix('│'))
+            })
+            .map(|content| content.trim_end_matches(' ').len())
+            .max()
+        else {
+            return lines;
+        };
+        let inner_width = inner_width + 1;
+
+        let mut normalized = Vec::with_capacity(lines.len());
+        normalized.push(format!("╭{}╮", "─".repeat(inner_width)));
+        for line in &lines[1..bottom_idx] {
+            if let Some(content) = line
+                .strip_prefix('│')
+                .and_then(|line| line.strip_suffix('│'))
+            {
+                let trimmed = content.trim_end_matches(' ');
+                normalized.push(format!(
+                    "│{trimmed}{}│",
+                    " ".repeat(inner_width.saturating_sub(trimmed.len()))
+                ));
+            } else {
+                normalized.push(line.clone());
+            }
+        }
+        normalized.push(format!("╰{}╯", "─".repeat(inner_width)));
+        normalized.extend(lines.into_iter().skip(bottom_idx + 1));
+        normalized
+    }
+
     fn image_block(data: &str) -> serde_json::Value {
         serde_json::to_value(Content::image(data.to_string(), "image/png"))
             .expect("image content should serialize")
@@ -3099,7 +3163,11 @@ mod tests {
             /*show_fast_status*/ false,
         );
 
-        let rendered = render_transcript(&cell).join("\n");
+        let rendered = render_transcript(&cell)
+            .into_iter()
+            .map(sanitize_codex_version)
+            .collect::<Vec<_>>();
+        let rendered = normalize_bordered_box_width(rendered).join("\n");
         insta::assert_snapshot!(rendered);
     }
 

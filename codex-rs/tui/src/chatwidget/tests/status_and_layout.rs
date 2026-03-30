@@ -123,6 +123,7 @@ async fn helpers_are_available_and_do_not_panic() {
         frame_requester: FrameRequester::test_dummy(),
         app_event_tx: tx,
         initial_user_message: None,
+        initial_autonomous_prompt: None,
         enhanced_keys_supported: false,
         has_chatgpt_account: false,
         model_catalog: test_model_catalog(&cfg),
@@ -165,6 +166,19 @@ async fn worked_elapsed_from_resets_when_timer_restarts() {
     // Simulate status timer resetting (e.g., status indicator recreated for a new task).
     assert_eq!(chat.worked_elapsed_from(/*current_elapsed*/ 3), 3);
     assert_eq!(chat.worked_elapsed_from(/*current_elapsed*/ 7), 4);
+}
+
+#[tokio::test]
+async fn status_line_autonomous_mode_renders_on_and_off() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous off".to_string()));
+
+    chat.always_continue_enabled = true;
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous on".to_string()));
 }
 
 #[tokio::test]

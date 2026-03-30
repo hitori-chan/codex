@@ -107,6 +107,160 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
 }
 
 #[tokio::test]
+async fn always_continue_slash_command_toggles_during_task() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+    chat.refresh_status_surfaces();
+    chat.agent_turn_running = true;
+    chat.update_task_running_state();
+
+    chat.dispatch_command(SlashCommand::Autonomous);
+
+    assert!(chat.always_continue_enabled);
+    assert_eq!(status_line_text(&chat), Some("Autonomous on".to_string()));
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Autonomous mode is on."),
+        "info message should confirm the toggle: {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_submits_continue_immediately() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Need anything else?".to_string()),
+        }),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "continue".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected auto-submitted continue turn, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_submits_custom_autonomous_prompt() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+    chat.set_autonomous_prompt(Some("continue".to_string()));
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("Need anything else?".to_string()),
+        }),
+    });
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn { items, .. } => {
+            assert_eq!(
+                items,
+                vec![UserInput::Text {
+                    text: "continue".to_string(),
+                    text_elements: Vec::new(),
+                }]
+            );
+        }
+        other => panic!("expected auto-submitted autonomous prompt, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn always_continue_turn_complete_skips_autonomous_prompt_after_usage_limit_error() {
+    let (mut chat, _rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+
+    chat.handle_codex_event(Event {
+        id: "turn-error".into(),
+        msg: EventMsg::Error(ErrorEvent {
+            message: "quota exceeded".to_string(),
+            codex_error_info: Some(CodexErrorInfo::UsageLimitExceeded),
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: None,
+        }),
+    });
+
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+    assert!(chat.always_continue_enabled);
+}
+
+#[tokio::test]
+async fn autonomous_set_subcommand_updates_prompt_without_enabling_mode() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.agent_turn_running = true;
+    chat.update_task_running_state();
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Autonomous,
+        "set continue".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(chat.autonomous_prompt.as_deref(), Some("continue"));
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(
+        rendered.contains("Autonomous prompt updated."),
+        "info message should confirm the prompt update: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Current session autonomous prompt: continue."),
+        "info message should show the current autonomous prompt: {rendered:?}"
+    );
+}
+
+#[tokio::test]
+async fn autonomous_set_continue_from_chatbox_clears_composer() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.bottom_pane.set_composer_text(
+        "/autonomous set continue".to_string(),
+        Vec::new(),
+        Vec::new(),
+    );
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    assert_eq!(chat.autonomous_prompt.as_deref(), Some("continue"));
+    assert_eq!(chat.bottom_pane.composer_text(), String::new());
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+}
+
+#[tokio::test]
 async fn slash_copy_state_tracks_plan_item_completion() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let plan_text = "## Plan\n\n1. Build it\n2. Test it".to_string();

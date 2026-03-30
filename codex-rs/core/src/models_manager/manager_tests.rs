@@ -33,7 +33,7 @@ use wiremock::MockServer;
 use wiremock::ResponseTemplate;
 use wiremock::matchers::header_regex;
 use wiremock::matchers::method;
-use wiremock::matchers::path;
+use wiremock::matchers::path_regex;
 
 fn remote_model(slug: &str, display: &str, priority: i32) -> ModelInfo {
     remote_model_with_visibility(slug, display, priority, "list")
@@ -420,7 +420,7 @@ async fn refresh_available_models_uses_provider_auth_token() {
     )];
 
     Mock::given(method("GET"))
-        .and(path("/models"))
+        .and(path_regex(".*/models$"))
         .and(header_regex("Authorization", "Bearer provider-token"))
         .respond_with(
             ResponseTemplate::new(200)

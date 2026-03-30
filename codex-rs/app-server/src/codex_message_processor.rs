@@ -1042,6 +1042,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.cancel();
                 drop(active);
             }
         }
@@ -1161,6 +1162,7 @@ impl CodexMessageProcessor {
                     {
                         let mut guard = self.active_login.lock().await;
                         if let Some(existing) = guard.take() {
+                            existing.cancel();
                             drop(existing);
                         }
                         *guard = Some(ActiveLogin::Browser {
@@ -1368,6 +1370,7 @@ impl CodexMessageProcessor {
         let mut guard = self.active_login.lock().await;
         if guard.as_ref().map(ActiveLogin::login_id) == Some(login_id) {
             if let Some(active) = guard.take() {
+                active.cancel();
                 drop(active);
             }
             Ok(())
@@ -1427,6 +1430,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.cancel();
                 drop(active);
             }
         }
@@ -1497,6 +1501,7 @@ impl CodexMessageProcessor {
         {
             let mut guard = self.active_login.lock().await;
             if let Some(active) = guard.take() {
+                active.cancel();
                 drop(active);
             }
         }

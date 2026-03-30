@@ -311,7 +311,6 @@ mod tests {
             "<user_action>\n  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>\n  <action>review</action>\n  <results>\n  Finding A\nFinding B\n  </results>\n  </user_action>\n"
         );
     }
-
     #[test]
     fn normalize_review_template_line_endings_rewrites_crlf() {
         assert_eq!(
