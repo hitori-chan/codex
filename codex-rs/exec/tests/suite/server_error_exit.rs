@@ -1,7 +1,7 @@
 #![cfg(not(target_os = "windows"))]
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
-use codex_core::auth::CODEX_API_KEY_ENV_VAR;
+use codex_login::CODEX_API_KEY_ENV_VAR;
 use core_test_support::responses;
 use core_test_support::test_codex_exec::test_codex_exec;
 use std::process::Command;

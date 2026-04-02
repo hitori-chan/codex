@@ -1764,7 +1764,7 @@ dependencies = [
 
 [[package]]
 name = "codex-cloud-tasks-mock-client"
-version = "0.0.0"
+version = "0.118.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2270,7 +2270,7 @@ dependencies = [
 
 [[package]]
 name = "codex-mcp"
-version = "0.0.0"
+version = "0.118.1"
 dependencies = [
  "anyhow",
  "async-channel",
