@@ -124,7 +124,7 @@ async fn always_continue_slash_command_toggles_during_task() {
     assert_eq!(cells.len(), 1, "expected one info message");
     let rendered = lines_to_single_string(&cells[0]);
     assert!(
-        rendered.contains("Autonomous mode is on."),
+        rendered.contains("Autonomous on."),
         "info message should confirm the toggle: {rendered:?}"
     );
 }
@@ -235,8 +235,12 @@ async fn autonomous_set_subcommand_updates_prompt_without_enabling_mode() {
         "info message should confirm the prompt update: {rendered:?}"
     );
     assert!(
-        rendered.contains("Current session autonomous prompt: continue."),
+        rendered.contains("Prompt: continue"),
         "info message should show the current autonomous prompt: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("Stop when: none"),
+        "info message should show the current stop trigger: {rendered:?}"
     );
 }
 
@@ -258,6 +262,73 @@ async fn autonomous_set_continue_from_chatbox_clears_composer() {
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1, "expected one info message");
+}
+
+#[tokio::test]
+async fn autonomous_until_updates_stop_message() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.agent_turn_running = true;
+    chat.update_task_running_state();
+
+    chat.dispatch_command_with_args(
+        SlashCommand::Autonomous,
+        "until AUTONOMOUS_DONE".to_string(),
+        Vec::new(),
+    );
+
+    assert_eq!(chat.autonomous_until.as_deref(), Some("AUTONOMOUS_DONE"));
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Autonomous stop message updated."));
+    assert!(rendered.contains("Stop when: AUTONOMOUS_DONE"));
+}
+
+#[tokio::test]
+async fn autonomous_status_shows_prompt_and_stop_message() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.always_continue_enabled = true;
+    chat.set_autonomous_prompt(Some("continue".to_string()));
+    chat.autonomous_until = Some("AUTONOMOUS_DONE".to_string());
+
+    chat.dispatch_command_with_args(SlashCommand::Autonomous, "status".to_string(), Vec::new());
+
+    let cells = drain_insert_history(&mut rx);
+    assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Autonomous is on."));
+    assert!(rendered.contains("Prompt: continue"));
+    assert!(rendered.contains("Stop when: AUTONOMOUS_DONE"));
+}
+
+#[tokio::test]
+async fn autonomous_turn_complete_stops_when_stop_message_matches() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.always_continue_enabled = true;
+    chat.autonomous_until = Some("AUTONOMOUS_DONE".to_string());
+
+    chat.handle_codex_event(Event {
+        id: "turn-complete".into(),
+        msg: EventMsg::TurnComplete(TurnCompleteEvent {
+            turn_id: "turn-1".to_string(),
+            last_agent_message: Some("AUTONOMOUS_DONE".to_string()),
+        }),
+    });
+
+    assert!(!chat.always_continue_enabled);
+    assert_matches!(op_rx.try_recv(), Err(TryRecvError::Empty));
+
+    let cells = drain_insert_history(&mut rx);
+    let rendered = cells
+        .iter()
+        .map(|lines| lines_to_single_string(lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Autonomous off. Stop message matched."));
 }
 
 #[tokio::test]

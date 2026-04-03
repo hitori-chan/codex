@@ -244,6 +244,7 @@ pub(super) async fn make_chatwidget_manual(
         always_continue_enabled: false,
         suppress_autonomous_on_turn_complete: false,
         autonomous_prompt: None,
+        autonomous_until: None,
         thread_id: None,
         thread_name: None,
         forked_from: None,

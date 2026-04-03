@@ -12,10 +12,6 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Start autonomous mode with a session-local prompt.
-    #[arg(long = "autonomous", value_name = "PROMPT", value_hint = clap::ValueHint::Other)]
-    pub autonomous: Option<String>,
-
     /// Optional image(s) to attach to the initial prompt.
     #[arg(
         long = "image",

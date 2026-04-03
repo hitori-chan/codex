@@ -252,9 +252,9 @@ const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next s
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const DEFAULT_AUTONOMOUS_PROMPT: &str = "continue";
 
-fn sanitize_autonomous_prompt(prompt: Option<String>) -> Option<String> {
-    prompt.and_then(|prompt| {
-        let trimmed = prompt.trim();
+fn sanitize_autonomous_text(text: Option<String>) -> Option<String> {
+    text.and_then(|text| {
+        let trimmed = text.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
 }
@@ -853,6 +853,7 @@ pub(crate) struct ChatWidget {
     always_continue_enabled: bool,
     suppress_autonomous_on_turn_complete: bool,
     autonomous_prompt: Option<String>,
+    autonomous_until: Option<String>,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
@@ -2370,7 +2371,20 @@ impl ChatWidget {
         self.refresh_pending_input_preview();
         let suppress_autonomous_on_turn_complete = self.suppress_autonomous_on_turn_complete;
         self.suppress_autonomous_on_turn_complete = false;
+        let should_stop_autonomous = !from_replay
+            && self.autonomous_until.as_deref().is_some_and(|stop_text| {
+                self.autonomous_stop_matches(&copyable_turn_output, stop_text)
+            });
+        if should_stop_autonomous {
+            self.always_continue_enabled = false;
+            self.refresh_status_surfaces();
+            self.add_info_message(
+                "Autonomous off. Stop message matched.".to_string(),
+                Some(self.autonomous_status_hint()),
+            );
+        }
         let should_auto_continue = self.always_continue_enabled
+            && !should_stop_autonomous
             && !suppress_autonomous_on_turn_complete
             && !from_replay
             && !self.has_queued_follow_up_messages()
@@ -4703,7 +4717,8 @@ impl ChatWidget {
             suppress_queue_autosend: false,
             always_continue_enabled: initial_autonomous_prompt.is_some(),
             suppress_autonomous_on_turn_complete: false,
-            autonomous_prompt: sanitize_autonomous_prompt(initial_autonomous_prompt),
+            autonomous_prompt: sanitize_autonomous_text(initial_autonomous_prompt),
+            autonomous_until: None,
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -5448,14 +5463,14 @@ impl ChatWidget {
                     }
                     "status" if remainder.is_empty() => self.add_info_message(
                         format!(
-                            "Autonomous mode is {}.",
+                            "Autonomous is {}.",
                             if self.always_continue_enabled {
                                 "on"
                             } else {
                                 "off"
                             }
                         ),
-                        Some(self.autonomous_prompt_status_hint()),
+                        Some(self.autonomous_status_hint()),
                     ),
                     "set" if !remainder.is_empty() => {
                         self.set_autonomous_prompt(Some(remainder.to_string()));
@@ -5463,20 +5478,20 @@ impl ChatWidget {
                             .set_composer_text(String::new(), Vec::new(), Vec::new());
                         self.add_info_message(
                             "Autonomous prompt updated.".to_string(),
-                            Some(self.autonomous_prompt_status_hint()),
+                            Some(self.autonomous_status_hint()),
                         );
                     }
-                    "default" if remainder.is_empty() => {
-                        self.set_autonomous_prompt(/*prompt*/ None);
+                    "until" if !remainder.is_empty() => {
+                        self.set_autonomous_until(Some(remainder.to_string()));
                         self.bottom_pane
                             .set_composer_text(String::new(), Vec::new(), Vec::new());
                         self.add_info_message(
-                            "Autonomous prompt set to default.".to_string(),
-                            Some(self.autonomous_prompt_status_hint()),
+                            "Autonomous stop message updated.".to_string(),
+                            Some(self.autonomous_status_hint()),
                         );
                     }
                     _ => self.add_error_message(
-                        "Usage: /autonomous [on|off|status|set <text>|default]".to_string(),
+                        "Usage: /autonomous [on|off|set <text>|until <text>|status]".to_string(),
                     ),
                 }
             }
@@ -9990,30 +10005,44 @@ impl ChatWidget {
         self.autonomous_prompt().replace('\n', "\\n")
     }
 
-    fn autonomous_prompt_status_hint(&self) -> String {
+    fn autonomous_until_preview(&self) -> String {
+        self.autonomous_until
+            .as_deref()
+            .map(|text| text.replace('\n', "\\n"))
+            .unwrap_or_else(|| "none".to_string())
+    }
+
+    fn autonomous_status_hint(&self) -> String {
         format!(
-            "Current session autonomous prompt: {}. When enabled, Codex auto-submits it after each completed turn.",
-            self.autonomous_prompt_preview()
+            "Prompt: {}\nStop when: {}",
+            self.autonomous_prompt_preview(),
+            self.autonomous_until_preview()
         )
     }
 
     pub(crate) fn set_autonomous_prompt(&mut self, prompt: Option<String>) {
-        self.autonomous_prompt = sanitize_autonomous_prompt(prompt);
+        self.autonomous_prompt = sanitize_autonomous_text(prompt);
+    }
+
+    fn set_autonomous_until(&mut self, until: Option<String>) {
+        self.autonomous_until = sanitize_autonomous_text(until);
+    }
+
+    fn autonomous_stop_matches(&self, output: &Option<String>, stop_text: &str) -> bool {
+        output
+            .as_deref()
+            .map(|message| message.trim().replace("\r\n", "\n"))
+            .is_some_and(|message| message == stop_text.trim().replace("\r\n", "\n"))
     }
 
     fn set_always_continue_enabled(&mut self, enabled: bool) {
         self.always_continue_enabled = enabled;
         self.refresh_status_surfaces();
         let state = if enabled { "on" } else { "off" };
-        let hint = if enabled {
-            Some(format!(
-                "{} Use `/autonomous off` to stop.",
-                self.autonomous_prompt_status_hint()
-            ))
-        } else {
-            Some("Auto-submit is disabled.".to_string())
-        };
-        self.add_info_message(format!("Autonomous mode is {state}."), hint);
+        self.add_info_message(
+            format!("Autonomous {state}."),
+            Some(self.autonomous_status_hint()),
+        );
     }
 
     pub(crate) fn add_plain_history_lines(&mut self, lines: Vec<Line<'static>>) {

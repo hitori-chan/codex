@@ -1306,7 +1306,6 @@ async fn run_ratatui_app(
 
     let Cli {
         prompt,
-        autonomous,
         images,
         no_alt_screen,
         ..
@@ -1341,7 +1340,6 @@ async fn run_ratatui_app(
         overrides.clone(),
         active_profile,
         prompt,
-        autonomous,
         images,
         session_selection,
         feedback,

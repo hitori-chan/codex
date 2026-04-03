@@ -97,9 +97,7 @@ impl SlashCommand {
             SlashCommand::MemoryUpdate => "DO NOT USE",
             SlashCommand::Model => "choose what model and reasoning effort to use",
             SlashCommand::Fast => "toggle Fast mode to enable fastest inference at 2X plan usage",
-            SlashCommand::Autonomous => {
-                "auto-submit the session autonomous prompt after each completed turn"
-            }
+            SlashCommand::Autonomous => "toggle autonomous follow-up mode",
             SlashCommand::Personality => "choose a communication style for Codex",
             SlashCommand::Realtime => "toggle realtime voice mode (experimental)",
             SlashCommand::Settings => "configure realtime microphone/speaker",

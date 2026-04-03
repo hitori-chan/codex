@@ -53,11 +53,3 @@ fn resume_accepts_output_last_message_flag_after_subcommand() {
     assert_eq!(args.session_id.as_deref(), Some("session-123"));
     assert_eq!(args.prompt.as_deref(), Some(PROMPT));
 }
-
-#[test]
-fn parses_autonomous_prompt_flag() {
-    let cli = Cli::parse_from(["codex-exec", "--autonomous", "continue", "hello"]);
-
-    assert_eq!(cli.autonomous.as_deref(), Some("continue"));
-    assert_eq!(cli.prompt.as_deref(), Some("hello"));
-}
