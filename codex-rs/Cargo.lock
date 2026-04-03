@@ -1793,7 +1793,7 @@ dependencies = [
 
 [[package]]
 name = "codex-collaboration-mode-templates"
-version = "0.0.0"
+version = "0.118.2"
 
 [[package]]
 name = "codex-config"
@@ -2348,7 +2348,7 @@ dependencies = [
 
 [[package]]
 name = "codex-model-provider-info"
-version = "0.0.0"
+version = "0.118.2"
 dependencies = [
  "codex-api",
  "codex-app-server-protocol",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "codex-models-manager"
-version = "0.0.0"
+version = "0.118.2"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2534,7 +2534,7 @@ dependencies = [
 
 [[package]]
 name = "codex-response-debug-context"
-version = "0.0.0"
+version = "0.118.2"
 dependencies = [
  "base64 0.22.1",
  "codex-api",
