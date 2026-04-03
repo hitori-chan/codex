@@ -235,11 +235,11 @@ async fn autonomous_set_subcommand_updates_prompt_without_enabling_mode() {
         "info message should confirm the prompt update: {rendered:?}"
     );
     assert!(
-        rendered.contains("Prompt: continue"),
+        rendered.contains("Continue: continue."),
         "info message should show the current autonomous prompt: {rendered:?}"
     );
     assert!(
-        rendered.contains("Stop when: none"),
+        rendered.contains("Stop when: AUTONOMOUS_DONE."),
         "info message should show the current stop trigger: {rendered:?}"
     );
 }
@@ -262,6 +262,8 @@ async fn autonomous_set_continue_from_chatbox_clears_composer() {
 
     let cells = drain_insert_history(&mut rx);
     assert_eq!(cells.len(), 1, "expected one info message");
+    let rendered = lines_to_single_string(&cells[0]);
+    assert!(rendered.contains("Stop when: AUTONOMOUS_DONE."));
 }
 
 #[tokio::test]
@@ -300,8 +302,8 @@ async fn autonomous_status_shows_prompt_and_stop_message() {
     assert_eq!(cells.len(), 1, "expected one info message");
     let rendered = lines_to_single_string(&cells[0]);
     assert!(rendered.contains("Autonomous is on."));
-    assert!(rendered.contains("Prompt: continue"));
-    assert!(rendered.contains("Stop when: AUTONOMOUS_DONE"));
+    assert!(rendered.contains("Continue: continue."));
+    assert!(rendered.contains("Stop when: AUTONOMOUS_DONE."));
 }
 
 #[tokio::test]

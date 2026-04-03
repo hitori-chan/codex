@@ -251,6 +251,7 @@ const MULTI_AGENT_ENABLE_NO: &str = "Not now";
 const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next session.";
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
 const DEFAULT_AUTONOMOUS_PROMPT: &str = "continue";
+const DEFAULT_AUTONOMOUS_UNTIL: &str = "AUTONOMOUS_DONE";
 
 fn sanitize_autonomous_text(text: Option<String>) -> Option<String> {
     text.and_then(|text| {
@@ -4716,7 +4717,7 @@ impl ChatWidget {
             always_continue_enabled: false,
             suppress_autonomous_on_turn_complete: false,
             autonomous_prompt: None,
-            autonomous_until: None,
+            autonomous_until: Some(DEFAULT_AUTONOMOUS_UNTIL.to_string()),
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -10007,12 +10008,12 @@ impl ChatWidget {
         self.autonomous_until
             .as_deref()
             .map(|text| text.replace('\n', "\\n"))
-            .unwrap_or_else(|| "none".to_string())
+            .unwrap_or_else(|| DEFAULT_AUTONOMOUS_UNTIL.to_string())
     }
 
     fn autonomous_status_hint(&self) -> String {
         format!(
-            "Prompt: {}\nStop when: {}",
+            "Continue: {}. Stop when: {}.",
             self.autonomous_prompt_preview(),
             self.autonomous_until_preview()
         )
