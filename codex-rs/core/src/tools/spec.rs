@@ -19,9 +19,6 @@ use codex_tools::build_tool_registry_plan;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[cfg(test)]
-pub(crate) use codex_tools::mcp_call_tool_result_output_schema;
-
 pub(crate) fn tool_user_shell_type(user_shell: &Shell) -> ToolUserShellType {
     match user_shell.shell_type {
         ShellType::Zsh => ToolUserShellType::Zsh,
@@ -30,23 +27,6 @@ pub(crate) fn tool_user_shell_type(user_shell: &Shell) -> ToolUserShellType {
         ShellType::Sh => ToolUserShellType::Sh,
         ShellType::Cmd => ToolUserShellType::Cmd,
     }
-}
-
-/// Builds the tool registry builder while collecting tool specs for later serialization.
-#[cfg(test)]
-pub(crate) fn build_specs(
-    config: &ToolsConfig,
-    mcp_tools: Option<HashMap<String, rmcp::model::Tool>>,
-    app_tools: Option<HashMap<String, ToolInfo>>,
-    dynamic_tools: &[DynamicToolSpec],
-) -> ToolRegistryBuilder {
-    build_specs_with_discoverable_tools(
-        config,
-        mcp_tools,
-        app_tools,
-        /*discoverable_tools*/ None,
-        dynamic_tools,
-    )
 }
 
 pub(crate) fn build_specs_with_discoverable_tools(
@@ -80,8 +60,8 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::multi_agents::SendInputHandler;
     use crate::tools::handlers::multi_agents::SpawnAgentHandler;
     use crate::tools::handlers::multi_agents::WaitAgentHandler;
-    use crate::tools::handlers::multi_agents_v2::AssignTaskHandler as AssignTaskHandlerV2;
     use crate::tools::handlers::multi_agents_v2::CloseAgentHandler as CloseAgentHandlerV2;
+    use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
     use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
     use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
     use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
@@ -156,9 +136,6 @@ pub(crate) fn build_specs_with_discoverable_tools(
             ToolHandlerKind::ApplyPatch => {
                 builder.register_handler(handler.name, apply_patch_handler.clone());
             }
-            ToolHandlerKind::AssignTaskV2 => {
-                builder.register_handler(handler.name, Arc::new(AssignTaskHandlerV2));
-            }
             ToolHandlerKind::CloseAgentV1 => {
                 builder.register_handler(handler.name, Arc::new(CloseAgentHandler));
             }
@@ -173,6 +150,9 @@ pub(crate) fn build_specs_with_discoverable_tools(
             }
             ToolHandlerKind::DynamicTool => {
                 builder.register_handler(handler.name, dynamic_tool_handler.clone());
+            }
+            ToolHandlerKind::FollowupTaskV2 => {
+                builder.register_handler(handler.name, Arc::new(FollowupTaskHandlerV2));
             }
             ToolHandlerKind::JsRepl => {
                 builder.register_handler(handler.name, js_repl_handler.clone());
