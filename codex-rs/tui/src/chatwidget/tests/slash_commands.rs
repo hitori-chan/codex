@@ -317,7 +317,7 @@ async fn autonomous_turn_complete_stops_when_stop_message_matches() {
         id: "turn-complete".into(),
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
-            last_agent_message: Some("AUTONOMOUS_DONE".to_string()),
+            last_agent_message: Some("Work complete.\nAUTONOMOUS_DONE".to_string()),
         }),
     });
 

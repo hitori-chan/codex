@@ -10028,7 +10028,7 @@ impl ChatWidget {
         output
             .as_deref()
             .map(|message| message.trim().replace("\r\n", "\n"))
-            .is_some_and(|message| message == stop_text.trim().replace("\r\n", "\n"))
+            .is_some_and(|message| message.contains(&stop_text.trim().replace("\r\n", "\n")))
     }
 
     fn set_always_continue_enabled(&mut self, enabled: bool) {
