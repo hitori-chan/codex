@@ -97,6 +97,8 @@ async fn slash_copy_state_tracks_turn_complete_final_reply() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Final reply **markdown**".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -140,6 +142,8 @@ async fn always_continue_turn_complete_submits_continue_immediately() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Need anything else?".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -169,6 +173,8 @@ async fn always_continue_turn_complete_submits_custom_autonomous_prompt() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Need anything else?".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -204,6 +210,8 @@ async fn always_continue_turn_complete_skips_autonomous_prompt_after_usage_limit
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -318,6 +326,8 @@ async fn autonomous_turn_complete_stops_when_stop_message_matches() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Work complete.\nAUTONOMOUS_DONE".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -354,6 +364,8 @@ async fn slash_copy_state_tracks_plan_item_completion() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
 
@@ -387,6 +399,8 @@ async fn slash_copy_state_is_preserved_during_running_task() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Previous completed reply".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
     chat.on_task_started();
@@ -406,6 +420,8 @@ async fn slash_copy_state_clears_on_thread_rollback() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: Some("Reply that will be rolled back".to_string()),
+            completed_at: None,
+            duration_ms: None,
         }),
     });
     chat.handle_codex_event(Event {
@@ -434,6 +450,8 @@ async fn slash_copy_is_unavailable_when_legacy_agent_message_is_not_repeated_on_
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -459,6 +477,7 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
         id: "turn-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
         }),
@@ -475,6 +494,8 @@ async fn slash_copy_uses_agent_message_item_when_turn_complete_omits_final_text(
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -504,6 +525,7 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
         id: "turn-1".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
         }),
@@ -520,6 +542,8 @@ async fn slash_copy_does_not_return_stale_output_after_thread_rollback() {
         msg: EventMsg::TurnComplete(TurnCompleteEvent {
             turn_id: "turn-1".to_string(),
             last_agent_message: None,
+            completed_at: None,
+            duration_ms: None,
         }),
     });
     let _ = drain_insert_history(&mut rx);
@@ -850,6 +874,32 @@ async fn user_turn_carries_service_tier_after_fast_toggle() {
 }
 
 #[tokio::test]
+async fn user_turn_clears_service_tier_after_fast_is_turned_off() {
+    let (mut chat, mut rx, mut op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    chat.thread_id = Some(ThreadId::new());
+    set_chatgpt_auth(&mut chat);
+    chat.set_feature_enabled(Feature::FastMode, /*enabled*/ true);
+
+    chat.dispatch_command(SlashCommand::Fast);
+    let _events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.dispatch_command_with_args(SlashCommand::Fast, "off".to_string(), Vec::new());
+    let _events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+
+    chat.bottom_pane
+        .set_composer_text("hello".to_string(), Vec::new(), Vec::new());
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    match next_submit_op(&mut op_rx) {
+        Op::UserTurn {
+            service_tier: Some(None),
+            ..
+        } => {}
+        other => panic!("expected Op::UserTurn to clear service tier, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn compact_queues_user_messages_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.thread_id = Some(ThreadId::new());
@@ -857,6 +907,7 @@ async fn compact_queues_user_messages_snapshot() {
         id: "turn-start".into(),
         msg: EventMsg::TurnStarted(TurnStartedEvent {
             turn_id: "turn-1".to_string(),
+            started_at: None,
             model_context_window: None,
             collaboration_mode_kind: ModeKind::Default,
         }),
