@@ -31,15 +31,13 @@ runs:
           exit 1
         fi
 
-        for binary in codex codex-responses-api-proxy; do
-          artifact="${dest}/${binary}"
-          if [[ ! -f "$artifact" ]]; then
-            echo "Binary $artifact not found"
-            exit 1
-          fi
+        artifact="${dest}/codex"
+        if [[ ! -f "$artifact" ]]; then
+          echo "Binary $artifact not found"
+          exit 1
+        fi
 
-          cosign sign-blob \
-            --yes \
-            --bundle "${artifact}.sigstore" \
-            "$artifact"
-        done
+        cosign sign-blob \
+          --yes \
+          --bundle "${artifact}.sigstore" \
+          "$artifact"

@@ -169,6 +169,19 @@ async fn worked_elapsed_from_resets_when_timer_restarts() {
 }
 
 #[tokio::test]
+async fn status_line_autonomous_mode_renders_on_and_off() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.config.tui_status_line = Some(vec!["autonomous-mode".to_string()]);
+
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous off".to_string()));
+
+    chat.always_continue_enabled = true;
+    chat.refresh_status_surfaces();
+    assert_eq!(status_line_text(&chat), Some("Autonomous on".to_string()));
+}
+
+#[tokio::test]
 async fn rate_limit_warnings_emit_thresholds() {
     let mut state = RateLimitWarningState::default();
     let mut warnings: Vec<String> = Vec::new();

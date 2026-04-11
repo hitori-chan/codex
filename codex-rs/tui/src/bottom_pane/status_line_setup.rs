@@ -101,6 +101,9 @@ pub(crate) enum StatusLineItem {
 
     /// Current thread title (if set by user).
     ThreadTitle,
+
+    /// Whether Autonomous mode is currently active.
+    AutonomousMode,
 }
 
 impl StatusLineItem {
@@ -133,6 +136,7 @@ impl StatusLineItem {
             }
             StatusLineItem::FastMode => "Whether Fast mode is currently active",
             StatusLineItem::ThreadTitle => "Current thread title (omitted unless changed by user)",
+            StatusLineItem::AutonomousMode => "Whether Autonomous mode is currently active",
         }
     }
 }
@@ -154,6 +158,7 @@ const SELECTABLE_STATUS_LINE_ITEMS: &[StatusLineItem] = &[
     StatusLineItem::SessionId,
     StatusLineItem::FastMode,
     StatusLineItem::ThreadTitle,
+    StatusLineItem::AutonomousMode,
 ];
 
 /// Runtime values used to preview the current status-line selection.

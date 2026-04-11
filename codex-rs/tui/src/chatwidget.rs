@@ -251,6 +251,16 @@ const MULTI_AGENT_ENABLE_YES: &str = "Yes, enable";
 const MULTI_AGENT_ENABLE_NO: &str = "Not now";
 const MULTI_AGENT_ENABLE_NOTICE: &str = "Subagents will be enabled in the next session.";
 const PLAN_MODE_REASONING_SCOPE_TITLE: &str = "Apply reasoning change";
+const DEFAULT_AUTONOMOUS_PROMPT: &str = "continue";
+const DEFAULT_AUTONOMOUS_UNTIL: &str = "AUTONOMOUS_DONE";
+
+fn sanitize_autonomous_text(text: Option<String>) -> Option<String> {
+    text.and_then(|text| {
+        let trimmed = text.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 const PLAN_MODE_REASONING_SCOPE_PLAN_ONLY: &str = "Apply to Plan mode override";
 const PLAN_MODE_REASONING_SCOPE_ALL_MODES: &str = "Apply to global default and Plan mode override";
 const CONNECTORS_SELECTION_VIEW_ID: &str = "connectors-selection";
@@ -853,6 +863,10 @@ pub(crate) struct ChatWidget {
     // Set when commentary output completes; once stream queues go idle we restore the status row.
     pending_status_indicator_restore: bool,
     suppress_queue_autosend: bool,
+    always_continue_enabled: bool,
+    suppress_autonomous_on_turn_complete: bool,
+    autonomous_prompt: Option<String>,
+    autonomous_until: Option<String>,
     thread_id: Option<ThreadId>,
     thread_name: Option<String>,
     forked_from: Option<ThreadId>,
@@ -2311,6 +2325,7 @@ impl ChatWidget {
 
     fn on_task_started(&mut self) {
         self.agent_turn_running = true;
+        self.suppress_autonomous_on_turn_complete = false;
         self.turn_sleep_inhibitor
             .set_turn_running(/*turn_running*/ true);
         self.saw_copy_source_this_turn = false;
@@ -2356,7 +2371,7 @@ impl ChatWidget {
         }
         // For desktop notifications: prefer the notification payload, fall back to
         // the item-level copy source if present, otherwise send an empty string.
-        let notification_response = last_agent_message
+        let copyable_turn_output = last_agent_message
             .as_ref()
             .filter(|message| !message.is_empty())
             .cloned()
@@ -2366,8 +2381,8 @@ impl ChatWidget {
                 } else {
                     None
                 }
-            })
-            .unwrap_or_default();
+            });
+        let notification_response = copyable_turn_output.clone().unwrap_or_default();
         self.saw_copy_source_this_turn = false;
         // If a stream is currently active, finalize it.
         self.flush_answer_stream_with_separator();
@@ -2415,6 +2430,28 @@ impl ChatWidget {
 
         let had_pending_steers = !self.pending_steers.is_empty();
         self.refresh_pending_input_preview();
+        let suppress_autonomous_on_turn_complete = self.suppress_autonomous_on_turn_complete;
+        self.suppress_autonomous_on_turn_complete = false;
+        let should_stop_autonomous = !from_replay
+            && self.autonomous_until.as_deref().is_some_and(|stop_text| {
+                self.autonomous_stop_matches(&copyable_turn_output, stop_text)
+            });
+        if should_stop_autonomous {
+            self.always_continue_enabled = false;
+            self.refresh_status_surfaces();
+            self.add_info_message(
+                "Autonomous off. Stop message matched.".to_string(),
+                Some(self.autonomous_status_hint()),
+            );
+        }
+        let should_auto_continue = self.always_continue_enabled
+            && !should_stop_autonomous
+            && !suppress_autonomous_on_turn_complete
+            && !from_replay
+            && !self.has_queued_follow_up_messages()
+            && !had_pending_steers
+            && !self.is_review_mode
+            && self.bottom_pane.no_modal_or_popup_active();
 
         if !from_replay && !self.has_queued_follow_up_messages() && !had_pending_steers {
             self.maybe_prompt_plan_implementation();
@@ -2424,8 +2461,12 @@ impl ChatWidget {
         if !from_replay {
             self.saw_plan_item_this_turn = false;
         }
-        // If there is a queued user message, send exactly one now to begin the next turn.
-        self.maybe_send_next_queued_input();
+        if should_auto_continue {
+            self.submit_user_message(self.autonomous_prompt().to_string().into());
+        } else {
+            // If there is a queued user message, send exactly one now to begin the next turn.
+            self.maybe_send_next_queued_input();
+        }
         // Emit a notification when the turn completes (suppressed if focused).
         self.notify(Notification::AgentTurnComplete {
             response: notification_response,
@@ -2820,6 +2861,7 @@ impl ChatWidget {
             match info {
                 RateLimitErrorKind::ServerOverloaded => self.on_server_overloaded_error(message),
                 RateLimitErrorKind::UsageLimit | RateLimitErrorKind::Generic => {
+                    self.suppress_autonomous_on_turn_complete = true;
                     self.on_error(message)
                 }
             }
@@ -4826,6 +4868,10 @@ impl ChatWidget {
             retry_status_header: None,
             pending_status_indicator_restore: false,
             suppress_queue_autosend: false,
+            always_continue_enabled: false,
+            suppress_autonomous_on_turn_complete: false,
+            autonomous_prompt: None,
+            autonomous_until: Some(DEFAULT_AUTONOMOUS_UNTIL.to_string()),
             thread_id: None,
             thread_name: None,
             forked_from: None,
@@ -5268,6 +5314,9 @@ impl ChatWidget {
                 };
                 self.set_service_tier_selection(next_tier);
             }
+            SlashCommand::Autonomous => {
+                self.set_always_continue_enabled(/*enabled*/ !self.always_continue_enabled);
+            }
             SlashCommand::Realtime => {
                 if !self.realtime_conversation_enabled() {
                     return;
@@ -5562,6 +5611,57 @@ impl ChatWidget {
                     _ => {
                         self.add_error_message("Usage: /fast [on|off|status]".to_string());
                     }
+                }
+            }
+            SlashCommand::Autonomous => {
+                if trimmed.is_empty() {
+                    self.dispatch_command(cmd);
+                    return;
+                }
+                let (subcommand, remainder) = trimmed
+                    .split_once(char::is_whitespace)
+                    .map(|(subcommand, remainder)| (subcommand, remainder.trim()))
+                    .unwrap_or((trimmed, ""));
+
+                match subcommand.to_ascii_lowercase().as_str() {
+                    "on" if remainder.is_empty() => {
+                        self.set_always_continue_enabled(/*enabled*/ true)
+                    }
+                    "off" if remainder.is_empty() => {
+                        self.set_always_continue_enabled(/*enabled*/ false)
+                    }
+                    "status" if remainder.is_empty() => self.add_info_message(
+                        format!(
+                            "Autonomous is {}.",
+                            if self.always_continue_enabled {
+                                "on"
+                            } else {
+                                "off"
+                            }
+                        ),
+                        Some(self.autonomous_status_hint()),
+                    ),
+                    "set" if !remainder.is_empty() => {
+                        self.set_autonomous_prompt(Some(remainder.to_string()));
+                        self.bottom_pane
+                            .set_composer_text(String::new(), Vec::new(), Vec::new());
+                        self.add_info_message(
+                            "Autonomous prompt updated.".to_string(),
+                            Some(self.autonomous_status_hint()),
+                        );
+                    }
+                    "until" if !remainder.is_empty() => {
+                        self.set_autonomous_until(Some(remainder.to_string()));
+                        self.bottom_pane
+                            .set_composer_text(String::new(), Vec::new(), Vec::new());
+                        self.add_info_message(
+                            "Autonomous stop message updated.".to_string(),
+                            Some(self.autonomous_status_hint()),
+                        );
+                    }
+                    _ => self.add_error_message(
+                        "Usage: /autonomous [on|off|set <text>|until <text>|status]".to_string(),
+                    ),
                 }
             }
             SlashCommand::Rename if !trimmed.is_empty() => {
@@ -7106,6 +7206,7 @@ impl ChatWidget {
                             self.on_server_overloaded_error(message)
                         }
                         RateLimitErrorKind::UsageLimit | RateLimitErrorKind::Generic => {
+                            self.suppress_autonomous_on_turn_complete = true;
                             self.on_error(message)
                         }
                     }
@@ -10152,6 +10253,58 @@ impl ChatWidget {
     pub(crate) fn add_info_message(&mut self, message: String, hint: Option<String>) {
         self.add_to_history(history_cell::new_info_event(message, hint));
         self.request_redraw();
+    }
+
+    fn autonomous_prompt(&self) -> &str {
+        self.autonomous_prompt
+            .as_deref()
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+            .unwrap_or(DEFAULT_AUTONOMOUS_PROMPT)
+    }
+
+    fn autonomous_prompt_preview(&self) -> String {
+        self.autonomous_prompt().replace('\n', "\\n")
+    }
+
+    fn autonomous_until_preview(&self) -> String {
+        self.autonomous_until
+            .as_deref()
+            .map(|text| text.replace('\n', "\\n"))
+            .unwrap_or_else(|| DEFAULT_AUTONOMOUS_UNTIL.to_string())
+    }
+
+    fn autonomous_status_hint(&self) -> String {
+        format!(
+            "Continue: {}. Stop when: {}.",
+            self.autonomous_prompt_preview(),
+            self.autonomous_until_preview()
+        )
+    }
+
+    pub(crate) fn set_autonomous_prompt(&mut self, prompt: Option<String>) {
+        self.autonomous_prompt = sanitize_autonomous_text(prompt);
+    }
+
+    fn set_autonomous_until(&mut self, until: Option<String>) {
+        self.autonomous_until = sanitize_autonomous_text(until);
+    }
+
+    fn autonomous_stop_matches(&self, output: &Option<String>, stop_text: &str) -> bool {
+        output
+            .as_deref()
+            .map(|message| message.trim().replace("\r\n", "\n"))
+            .is_some_and(|message| message.contains(&stop_text.trim().replace("\r\n", "\n")))
+    }
+
+    fn set_always_continue_enabled(&mut self, enabled: bool) {
+        self.always_continue_enabled = enabled;
+        self.refresh_status_surfaces();
+        let state = if enabled { "on" } else { "off" };
+        self.add_info_message(
+            format!("Autonomous {state}."),
+            Some(self.autonomous_status_hint()),
+        );
     }
 
     pub(crate) fn add_plain_history_lines(&mut self, lines: Vec<Line<'static>>) {
